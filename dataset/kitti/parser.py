@@ -411,7 +411,7 @@ class Parser():
       self.testiter = iter(self.testloader)
 
   def get_train_batch(self):
-    scans = self.trainiter.next()
+    scans = next(self.trainiter)
     return scans
 
   def get_train_set(self):
