@@ -4,8 +4,10 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 from modules.network.ResNet import ResNet_34
 from dataset.kitti.parser import Parser
+from modules.Basic_HD import ExpHD
 
 NUM_CLASSES = 28 # testing on SemanticKITTI
 
@@ -14,15 +16,23 @@ class TestContrastConv(nn.Module):
         super().__init__()
         self.net = ResNet_34(NUM_CLASSES, False)
         self.patch_size = 16 # works since input is image of 512 * 64
-        self.conv = nn.Conv2d(28, 28, self.patch_size, stride=self.patch_size, padding=0)
+        self.conv = nn.Conv2d(128, 128, self.patch_size, stride=self.patch_size, padding=0)
+
+        self.low_classifier = nn.Conv2d(128, NUM_CLASSES, kernel_size=1)
+        self.high_classifier = nn.Conv2d(128, NUM_CLASSES, kernel_size=1)
 
     def forward(self, x):
-        low = self.net(x)
+        """
+        returns low and high level features
+        """
+        low = self.net(x, only_feat = True)
         high = self.conv(low)
         return low, high
 
-    def loss(self):
-        pass
+    def loss(self, low, high, low_label, high_label):
+        low_class = self.low_classifier(low)
+        high_class = self.high_classifier(high)
+        print(f"{low_class.size()} {high_class.size()}")
 
 class Tester(nn.Module):
     def __init__(self):
@@ -32,7 +42,7 @@ class Tester(nn.Module):
         pass
 
 def main():
-    try:        # open arch config file
+    try: # open arch config file
         ARCH = yaml.safe_load(open("config/arch/senet-512.yml", 'r'))
     except Exception as e:
         print(f"Error opening arch yaml file. {e}")
@@ -60,12 +70,13 @@ def main():
     train_in = parser.get_train_batch()[0][0]
     train_in = train_in[None, ...]
     print(train_in.size())
-    print(train_in.size())
     testnet = TestContrastConv()
 
-    temp1, temp2 = testnet(train_in)
-    print(temp1.size())
-    print(temp2.size())
+    low, high = testnet(train_in)
+    print(f"Low-Level: {low.size()}")
+    print(f"High-Level: {high.size()}")
+
+    testnet.loss(low, high, low, high)
 
 if __name__ == "__main__":
     main()
