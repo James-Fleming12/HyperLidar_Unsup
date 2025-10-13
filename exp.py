@@ -11,15 +11,41 @@ from modules.Basic_HD import ExpHD
 
 NUM_CLASSES = 28 # testing on SemanticKITTI
 
+class ModePool2D(nn.Module):
+    def __init__(self, patch_size):
+        super().__init__()
+        self.patch_size = patch_size
+
+    def forward(self, x):
+        orig_dtype = x.dtype
+        x = x.unsqueeze(1) # unfold needs a 4D tensor
+        x = x.float() # also needs it to be a float tensor
+        batch_size, channels, height, width = x.shape
+        patches = F.unfold(x, kernel_size=self.patch_size, stride=self.patch_size)
+        if patches.dim() == 2:
+            patches = patches.unsqueeze(0)
+
+        patch_area = self.patch_size * self.patch_size
+        patches = patches.view(batch_size, channels, patch_area, -1)
+        patches = patches.to(orig_dtype)
+        mode_values, _ = torch.mode(patches, dim=2)
+
+        output = mode_values.view(batch_size, height // self.patch_size, width // self.patch_size)
+
+        return output
+
 class TestContrastConv(nn.Module):
-    def __init__(self):
+    def __init__(self, patch_size=4):
         super().__init__()
         self.net = ResNet_34(NUM_CLASSES, False)
-        self.patch_size = 16 # works since input is image of 512 * 64
+        self.patch_size = patch_size # 16 works since input is image of 512 * 64
         self.conv = nn.Conv2d(128, 128, self.patch_size, stride=self.patch_size, padding=0)
 
         self.low_classifier = nn.Conv2d(128, NUM_CLASSES, kernel_size=1)
         self.high_classifier = nn.Conv2d(128, NUM_CLASSES, kernel_size=1)
+        self.modepool = ModePool2D(self.patch_size)
+
+        self.criterion = nn.CrossEntropyLoss()
 
     def forward(self, x):
         """
@@ -29,10 +55,17 @@ class TestContrastConv(nn.Module):
         high = self.conv(low)
         return low, high
 
-    def loss(self, low, high, low_label, high_label):
+    def loss(self, low, high, label):
         low_class = self.low_classifier(low)
         high_class = self.high_classifier(high)
-        print(f"{low_class.size()} {high_class.size()}")
+
+        high_label = self.modepool(label) # has way too many zeroes and not even close to enough ones, might be a problem
+                                          # might need to make a function that gives a one hot vector of all the values within the patch
+
+        ones = torch.sum(high_label == 1).item()
+        zeros = torch.sum(high_label == 0).item()
+        print(f"Ones: {ones}, Zeroes: {zeros}")
+
 
 class Tester(nn.Module):
     def __init__(self):
@@ -67,16 +100,16 @@ def main():
             gt=True,
             shuffle_train=False)
 
-    train_in = parser.get_train_batch()[0][0]
-    train_in = train_in[None, ...]
-    print(train_in.size())
+    test_batch = parser.get_train_batch() # first are inputs, second are labels
+    test_in = test_batch[0][0] 
+    test_in = test_in[None, ...] # 1, 5, 64, 512
+    test_la = test_batch[1][0]
+    test_la = test_la[None, ...] # 1, 64, 512
     testnet = TestContrastConv()
 
-    low, high = testnet(train_in)
-    print(f"Low-Level: {low.size()}")
-    print(f"High-Level: {high.size()}")
+    low, high = testnet(test_in) # low: 1, 128, 64, 512   high: 1, 128, 4, 32
 
-    testnet.loss(low, high, low, high)
+    testnet.loss(low, high, test_la)
 
 if __name__ == "__main__":
     main()
