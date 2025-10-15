@@ -33,19 +33,52 @@ class ModePool2D(nn.Module):
         output = mode_values.view(batch_size, height // self.patch_size, width // self.patch_size)
 
         return output
+    
+class HistogramPool(nn.Module):
+    def __init__(self, patch_size, num_classes):
+        super().__init__()
+        self.patch_size = patch_size
+        self.num_classes = num_classes
+
+    def forward(self, x):
+        if x.dim() == 3: # mainly for testing to add batch dimension
+            x = x.unsqueeze(0)
+        batch_size, channels, height, width = x.shape
+        h_out = height // self.patch_size
+        w_out = width // self.patch_size
+        patches = F.unfold(x.float(), kernel_size=self.patch_size, stride=self.patch_size)
+
+        patches = patches.view(batch_size, channels, self.patch_size * self.patch_size, -1).long()
+        patches = patches - 1
+        # num_patches = patches.shape[-1]
+
+        patches_one_hot = torch.zeros(batch_size, self.num_classes, self.patch_size * self.patch_size, h_out * w_out, device=x.device)
+        
+        patches_expanded = patches.expand(-1, self.num_classes, -1, -1)
+        class_indices = torch.arange(self.num_classes, device=x.device).view(1, -1, 1, 1)
+        mask = (patches_expanded == class_indices)
+        patches_one_hot[mask] = 1
+        
+        output = patches_one_hot.sum(dim=2)
+        output = output.view(batch_size, self.num_classes, h_out, w_out)
+        
+        return output
 
 class TestContrastConv(nn.Module):
-    def __init__(self, patch_size=4):
+    def __init__(self, patch_size=4, num_classes=NUM_CLASSES):
         super().__init__()
-        self.net = ResNet_34(NUM_CLASSES, False)
+        self.net = ResNet_34(num_classes, False)
         self.patch_size = patch_size # 16 works since input is image of 512 * 64
         self.conv = nn.Conv2d(128, 128, self.patch_size, stride=self.patch_size, padding=0)
 
-        self.low_classifier = nn.Conv2d(128, NUM_CLASSES, kernel_size=1)
-        self.high_classifier = nn.Conv2d(128, NUM_CLASSES, kernel_size=1)
-        self.modepool = ModePool2D(self.patch_size)
+        self.low_classifier = nn.Conv2d(128, num_classes, kernel_size=1)
+        self.high_classifier = nn.Conv2d(128, num_classes, kernel_size=1)
+        self.pool = HistogramPool(self.patch_size, num_classes)
+        self.num_classes = num_classes
 
         self.criterion = nn.CrossEntropyLoss()
+
+        self.scale = 0.5 # relatively low rn cause the high-level loss is really high
 
     def forward(self, x):
         """
@@ -58,14 +91,20 @@ class TestContrastConv(nn.Module):
     def loss(self, low, high, label):
         low_class = self.low_classifier(low)
         high_class = self.high_classifier(high)
+        low_class = F.log_softmax(low_class, dim=1)
+        high_class = F.log_softmax(high_class, dim=1)
 
-        high_label = self.modepool(label) # has way too many zeroes and not even close to enough ones, might be a problem
-                                          # might need to make a function that gives a one hot vector of all the values within the patch
+        high_label = self.pool(label)
+        label_onehot = F.one_hot(label.long(), num_classes=self.num_classes)
+        label_onehot = label_onehot.permute(0, 3, 1, 2)
 
-        ones = torch.sum(high_label == 1).item()
-        zeros = torch.sum(high_label == 0).item()
-        print(f"Ones: {ones}, Zeroes: {zeros}")
+        low_loss = -label_onehot * low_class
+        low_loss = low_loss.sum(dim=1).mean()
 
+        high_loss = -high_label * high_class
+        high_loss = high_loss.sum(dim=1).mean()
+
+        return low_loss + self.scale * high_loss
 
 class Tester(nn.Module):
     def __init__(self):
@@ -106,6 +145,8 @@ def main():
     test_la = test_batch[1][0]
     test_la = test_la[None, ...] # 1, 64, 512
     testnet = TestContrastConv()
+
+    # test_test_la = torch.randint(low=1, high=29, size=(1, 64, 512))
 
     low, high = testnet(test_in) # low: 1, 128, 64, 512   high: 1, 128, 4, 32
 
