@@ -95,7 +95,10 @@ class TestContrastConv(nn.Module):
         high_class = F.log_softmax(high_class, dim=1)
 
         high_label = self.pool(label)
-        label_onehot = F.one_hot(label.long(), num_classes=self.num_classes)
+        mask = label > 0
+        labels_shifted = label.clone()
+        labels_shifted[mask] = label[mask] - 1 # since 0 values are not classes for segmentation
+        label_onehot = F.one_hot(labels_shifted.long(), num_classes=self.num_classes) # -1 values would cause errors with this
         label_onehot = label_onehot.permute(0, 3, 1, 2)
 
         low_loss = -label_onehot * low_class
