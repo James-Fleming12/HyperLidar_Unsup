@@ -78,7 +78,7 @@ class TestContrastConv(nn.Module):
 
         self.criterion = nn.CrossEntropyLoss()
 
-        self.scale = 0.5 # relatively low rn cause the high-level loss is really high
+        self.scale = 1 # relatively low rn cause the high-level loss is really high
 
     def forward(self, x):
         """
@@ -95,6 +95,11 @@ class TestContrastConv(nn.Module):
         high_class = F.log_softmax(high_class, dim=1)
 
         high_label = self.pool(label)
+
+        high_sums = high_label.sum(dim=1, keepdim=True)
+        high_sums = torch.where(high_sums == 0, torch.ones_like(high_sums), high_sums) # avoid division by 0
+        high_label = high_label / high_sums # normalize so loss terms are not imbalanced (maybe?)
+
         mask = label > 0
         labels_shifted = label.clone()
         labels_shifted[mask] = label[mask] - 1 # since 0 values are not classes for segmentation
