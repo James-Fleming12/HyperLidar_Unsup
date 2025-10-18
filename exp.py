@@ -1,3 +1,4 @@
+from itertools import cycle
 import yaml
 import os
 
@@ -52,14 +53,12 @@ class HistogramPool(nn.Module):
         patches = patches - 1
         # num_patches = patches.shape[-1]
 
-        patches_one_hot = torch.zeros(batch_size, self.num_classes, self.patch_size * self.patch_size, h_out * w_out, device=x.device)
-        
-        patches_expanded = patches.expand(-1, self.num_classes, -1, -1)
-        class_indices = torch.arange(self.num_classes, device=x.device).view(1, -1, 1, 1)
-        mask = (patches_expanded == class_indices)
-        patches_one_hot[mask] = 1
-        
-        output = patches_one_hot.sum(dim=2)
+        patches_one_hot = torch.zeros(batch_size, channels, self.num_classes, self.patch_size * self.patch_size, h_out * w_out, device=x.device)
+
+        patches_unsqueezed = patches.unsqueeze(2)  # Add class dimension
+        patches_one_hot.scatter_(2, patches_unsqueezed, 1)
+
+        output = patches_one_hot.sum(dim=[3, 1])
         output = output.view(batch_size, self.num_classes, h_out, w_out)
         
         return output
@@ -114,13 +113,6 @@ class TestContrastConv(nn.Module):
 
         return low_loss + self.scale * high_loss
 
-class Tester(nn.Module):
-    def __init__(self):
-        self.enc = TestContrastConv()
-
-    def forward(self, x):
-        pass
-
 def main():
     try: # open arch config file
         ARCH = yaml.safe_load(open("config/arch/senet-512.yml", 'r'))
@@ -142,23 +134,75 @@ def main():
             learning_map_inv=DATA["learning_map_inv"],
             sensor=ARCH["dataset"]["sensor"],
             max_points=ARCH["dataset"]["max_points"],
-            batch_size=ARCH["train"]["batch_size"],
+            batch_size=ARCH["train"]["batch_size"], # batch-size is 6 with current setup
             workers=ARCH["train"]["workers"],
             gt=True,
             shuffle_train=False)
 
-    test_batch = parser.get_train_batch() # first are inputs, second are labels
-    test_in = test_batch[0][0] 
-    test_in = test_in[None, ...] # 1, 5, 64, 512
-    test_la = test_batch[1][0]
-    test_la = test_la[None, ...] # 1, 64, 512
-    testnet = TestContrastConv()
+    # test_batch = parser.get_train_batch() # first are inputs, second are labels
+    # test_in = test_batch[0][0] 
+    # test_in = test_in[None, ...] # 1, 5, 64, 512
+    # test_la = test_batch[1][0]
+    # test_la = test_la[None, ...] # 1, 64, 512
+    net = TestContrastConv()
 
-    # test_test_la = torch.randint(low=1, high=29, size=(1, 64, 512))
+    # low, high = net(test_in) # low: 1, 128, 64, 512   high: 1, 128, 4, 32
 
-    low, high = testnet(test_in) # low: 1, 128, 64, 512   high: 1, 128, 4, 32
+    # net.loss(low, high, test_la)
+    train_dataset = parser.get_train_set()
+    val_dataset = parser.get_valid_set()
+    optimizer = torch.optim.Adam(net.parameters(), lr=ARCH["train"]["decay"]["lr"])
+    best_val_loss = float("inf")
 
-    testnet.loss(low, high, test_la)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    net.to(device)
+
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5)
+
+    for epoch in range(ARCH["train"]["max_epochs"]):
+        net.train()
+        train_loss = 0.0
+        num_batches = 0
+        
+        for batch_idx, curr in enumerate(train_dataset):
+            curr_in = curr[0].to(device)
+            curr_label =  curr[1].to(device)
+            
+            optimizer.zero_grad()
+            low, high = net(curr_in)
+            loss = net.loss(low, high, curr_label)
+            loss.backward()
+            optimizer.step()
+            
+            train_loss += loss.item()
+            num_batches += 1
+
+            if batch_idx % 100 == 0:
+                print(f"Epoch: {epoch} | Batch: {batch_idx} | Loss: {loss.item():.4f}")
+        
+        avg_train_loss = train_loss / num_batches
+        
+        # Validation phase
+        net.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for curr in val_dataset:
+                curr_in = curr[0].to(device)
+                curr_label =  curr[4].to(device)
+                low, high = net(curr_in)
+                loss = net.loss(low, high, curr_label)
+                val_loss += loss.item()
+        
+        avg_val_loss = val_loss / parser.get_valid_size
+        scheduler.step(avg_val_loss)
+        
+        print(f"Epoch: {epoch} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | LR: {optimizer.param_groups[0]["lr"]:.6f}")
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save(net.state_dict(), 'best_model.pth')
+            print(f"Best Model saved in best_model.pth with loss of {best_val_loss:.4f}")
 
 if __name__ == "__main__":
     main()
