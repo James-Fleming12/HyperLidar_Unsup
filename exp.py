@@ -128,7 +128,7 @@ def main():
         print(f"Error opening data yaml file. {e}")
         quit()
     parser = Parser(root = os.getcwd() + "/kitti_data/",
-            train_sequences=[0,1,2,3,4,5,6,7,9,10],
+            train_sequences=[1,2,3,4,5,6,7,9,10],
             valid_sequences=[8],
             test_sequences=[11,12,13,14,15,16,17,18,19,20,21],
             labels=DATA["labels"],
@@ -204,8 +204,8 @@ def main():
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(net.state_dict(), 'best_model.pth')
-            print(f"Best Model saved in best_model.pth with loss of {best_val_loss:.4f}")
+            torch.save(net.state_dict(), 'extractor_model.pth')
+            print(f"Model saved in extractor_model.pth with loss of {best_val_loss:.4f}")
 
 if __name__ == "__main__":
     main()
