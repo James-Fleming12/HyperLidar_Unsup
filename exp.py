@@ -127,10 +127,10 @@ def main():
     except Exception as e:
         print(f"Error opening data yaml file. {e}")
         quit()
-    parser = Parser(root = os.getcwd() + "/nuscenes_kitti/",
-            train_sequences=[0,1],
-            valid_sequences=[0,1],
-            test_sequences=[0,1],
+    parser = Parser(root = os.getcwd() + "/kitti_data/",
+            train_sequences=[0,1,2,3,4,5,6,7,9,10],
+            valid_sequences=[8],
+            test_sequences=[11,12,13,14,15,16,17,18,19,20,21],
             labels=DATA["labels"],
             color_map=DATA["color_map"],
             learning_map=DATA["learning_map"],
