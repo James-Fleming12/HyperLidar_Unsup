@@ -109,7 +109,8 @@ class TestContrastConv(nn.Module):
         label_onehot = label_onehot.permute(0, 3, 1, 2)
 
         low_loss = -label_onehot * low_class
-        low_loss = low_loss.sum(dim=1).mean()
+        low_loss = low_loss.sum(dim=1)
+        low_loss = (low_loss * mask.float()).mean() # only average over valid pixels
 
         high_loss = -high_label * high_class
         high_loss = high_loss.sum(dim=1).mean()
@@ -189,6 +190,7 @@ def main():
         # Validation phase
         net.eval()
         val_loss = 0.0
+        num_val_batches = 0
         with torch.no_grad():
             for curr in val_dataset:
                 curr_in = curr[0].to(device)
@@ -196,8 +198,9 @@ def main():
                 low, high = net(curr_in)
                 loss = net.loss(low, high, curr_label)
                 val_loss += loss.item()
+                num_val_batches += 1
         
-        avg_val_loss = val_loss / parser.get_valid_size
+        avg_val_loss = val_loss / num_val_batches
         scheduler.step(avg_val_loss)
         
         print(f"Epoch: {epoch} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | LR: {optimizer.param_groups[0]["lr"]:.6f}")
