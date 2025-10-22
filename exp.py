@@ -54,6 +54,9 @@ class HistogramPool(nn.Module):
         patches = patches - 1
         # num_patches = patches.shape[-1]
 
+        # added for precaution to see if it fixes convergence, checking for an error in the code
+        patches = torch.clamp(patches, min=0)
+
         patches_one_hot = torch.zeros(batch_size, self.num_classes, channels, self.patch_size * self.patch_size, h_out * w_out, device=x.device)
         patches_expanded = patches.unsqueeze(1).expand(-1, self.num_classes, -1, -1, -1)
 
@@ -61,7 +64,8 @@ class HistogramPool(nn.Module):
         mask = (patches_expanded == class_indices)
         patches_one_hot[mask] = 1
 
-        output = patches_one_hot.sum(dim=[3, 2])  # dim3: spatial, dim2: channels
+        # output = patches_one_hot.sum(dim=[3, 2])  # dim3: spatial, dim2: channels
+        output = patches_one_hot.sum(dim=2)
         output = output.view(batch_size, self.num_classes, h_out, w_out)
         
         return output
@@ -80,7 +84,7 @@ class TestContrastConv(nn.Module):
 
         self.criterion = nn.CrossEntropyLoss()
 
-        self.scale = 1 # relatively low rn cause the high-level loss is really high
+        self.scale = 0.1
 
     def forward(self, x):
         """
@@ -155,7 +159,8 @@ def main():
     # net.loss(low, high, test_la)
     train_dataset = parser.get_train_set()
     val_dataset = parser.get_valid_set()
-    optimizer = torch.optim.Adam(net.parameters(), lr=ARCH["train"]["decay"]["lr"])
+    # optimizer = torch.optim.Adam(net.parameters(), lr=ARCH["train"]["decay"]["lr"])
+    optimizer = torch.optim.Adam(net.parameters(), lr=0.001) # changes from 0.000001
     best_val_loss = float("inf")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
