@@ -42,30 +42,30 @@ class HistogramPool(nn.Module):
         self.num_classes = num_classes
 
     def forward(self, x):
-        if x.dim() == 3: # mainly for testing to add batch dimension
-            x = x.unsqueeze(0)
+        if x.dim() == 3:
+            x = x.unsqueeze(1)
         batch_size, channels, height, width = x.shape
+        
+        if channels > 1:
+            x = x[:, 0:1, :, :]
+            
         h_out = height // self.patch_size
         w_out = width // self.patch_size
+        num_patches = h_out * w_out
+        patch_area = self.patch_size * self.patch_size
+        
         patches = F.unfold(x.float(), kernel_size=self.patch_size, stride=self.patch_size)
 
-        patches = patches.view(batch_size, channels, self.patch_size * self.patch_size, -1).long()
-
+        patches = patches.view(batch_size, channels, patch_area, num_patches).long()
         patches = patches - 1
-        # num_patches = patches.shape[-1]
-
-        # added for precaution to see if it fixes convergence, checking for an error in the code
         patches = torch.clamp(patches, min=0)
+        
+        patches_flat = patches.view(batch_size, channels * patch_area, num_patches)
+        patches_one_hot = F.one_hot(patches_flat.permute(0, 2, 1), num_classes=self.num_classes)
 
-        patches_one_hot = torch.zeros(batch_size, self.num_classes, channels, self.patch_size * self.patch_size, h_out * w_out, device=x.device)
-        patches_expanded = patches.unsqueeze(1).expand(-1, self.num_classes, -1, -1, -1)
-
-        class_indices = torch.arange(self.num_classes, device=x.device).view(1, -1, 1, 1, 1)
-        mask = (patches_expanded == class_indices)
-        patches_one_hot[mask] = 1
-
-        # output = patches_one_hot.sum(dim=[3, 2])  # dim3: spatial, dim2: channels
-        output = patches_one_hot.sum(dim=2)
+        histogram = patches_one_hot.sum(dim=2)
+        
+        output = histogram.permute(0, 2, 1).contiguous()
         output = output.view(batch_size, self.num_classes, h_out, w_out)
         
         return output
@@ -182,6 +182,7 @@ def main():
             low, high = net(curr_in)
             loss = net.loss(low, high, curr_label)
             loss.backward()
+
             optimizer.step()
             
             train_loss += loss.item()
