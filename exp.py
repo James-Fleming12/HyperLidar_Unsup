@@ -57,12 +57,15 @@ class HistogramPool(nn.Module):
         patches = F.unfold(x.float(), kernel_size=self.patch_size, stride=self.patch_size)
 
         patches = patches.view(batch_size, channels, patch_area, num_patches).long()
-        patches = patches - 1
-        patches = torch.clamp(patches, min=0)
-        
-        patches_flat = patches.view(batch_size, channels * patch_area, num_patches)
+        valid_mask = (patches != 0)
+
+        patches_clean = patches.clone()
+        patches_clean[~valid_mask] = 0
+
+        patches_flat = patches_clean.view(batch_size, channels * patch_area, num_patches)
         patches_one_hot = F.one_hot(patches_flat.permute(0, 2, 1), num_classes=self.num_classes)
 
+        patches_one_hot[~valid_mask.view(batch_size, patch_area * channels, num_patches).permute(0, 2, 1)] = 0
         histogram = patches_one_hot.sum(dim=2)
         
         output = histogram.permute(0, 2, 1).contiguous()
@@ -82,7 +85,7 @@ class TestContrastConv(nn.Module):
         self.pool = HistogramPool(self.patch_size, num_classes)
         self.num_classes = num_classes
 
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = nn.NLLLoss(ignore_index=0)
 
         self.scale = 0.1
 
@@ -104,18 +107,12 @@ class TestContrastConv(nn.Module):
 
         high_sums = high_label.sum(dim=1, keepdim=True)
         high_sums = torch.where(high_sums == 0, torch.ones_like(high_sums), high_sums) # avoid division by 0
-        high_label = high_label / high_sums # normalize so loss terms are not imbalanced (maybe?)
+        # high_label = high_label / high_sums # normalize so loss terms are not imbalanced
 
-        mask = label > 0
-        labels_shifted = label.clone()
-        labels_shifted[mask] = label[mask] - 1 # since 0 values are not classes for segmentation
-        label_onehot = F.one_hot(labels_shifted.long(), num_classes=self.num_classes) # -1 values would cause errors with this
-        label_onehot = label_onehot.permute(0, 3, 1, 2)
-
-        low_loss = -label_onehot * low_class
-        low_loss = low_loss.sum(dim=1)
-        low_loss = (low_loss * mask.float()).mean() # only average over valid pixels
-
+        # low_loss = -label_onehot * low_class
+        # low_loss = low_loss.sum(dim=1)
+        # low_loss = (low_loss * mask.float()).mean() # only average over valid pixels
+        low_loss = self.criterion(low_class, label.long())
         high_loss = -high_label * high_class
         high_loss = high_loss.sum(dim=1).mean()
 
