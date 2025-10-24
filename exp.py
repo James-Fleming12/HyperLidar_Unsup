@@ -96,11 +96,51 @@ class TestContrastConv(nn.Module):
         low = self.net(x, only_feat = True)
         high = self.conv(low)
         return low, high
+    
+    def check_gradients(self):
+        """Check gradient flow through the network"""
+        print(f"\n{'='*50}")
+        print("GRADIENT DIAGNOSTICS")
+        print(f"{'='*50}")
+        
+        total_norm = 0
+        has_vanish = False
+        has_explode = False
+        
+        for name, param in self.named_parameters():
+            if param.grad is not None:
+                grad_norm = param.grad.norm().item()
+                grad_mean = param.grad.abs().mean().item()
+                total_norm += grad_norm ** 2
+                
+                status = "OK"
+                if grad_mean < 1e-7:
+                    status = "VANISHING"
+                    has_vanish = True
+                elif grad_mean > 1.0:
+                    status = "EXPLODING"
+                    has_explode = True
+                
+                print(f"{name:40} | Norm: {grad_norm:8.6f} | Mean: {grad_mean:8.6f} | {status}")
+            else:
+                print(f"{name:40} | No gradients")
+        
+        total_norm = total_norm ** 0.5
+        print(f"\nTotal Gradient Norm: {total_norm:.6f}")
+        print(f"Gradient Status: {'VANISHING' if has_vanish else 'EXPLODING' if has_explode else 'HEALTHY'}")
+        print(f"{'='*50}\n")
+        
+        return total_norm
 
-    def loss(self, low, high, label):
+    def loss(self, low, high, label, current_epoch):
         low_class = self.low_classifier(low)
-        high_class = self.high_classifier(high)
         low_class = F.log_softmax(low_class, dim=1)
+        low_loss = self.criterion(low_class, label.long())
+
+        if current_epoch < 10:
+            return low_loss
+
+        high_class = self.high_classifier(high)
         high_class = F.log_softmax(high_class, dim=1)
 
         high_label = self.pool(label)
@@ -112,11 +152,18 @@ class TestContrastConv(nn.Module):
         # low_loss = -label_onehot * low_class
         # low_loss = low_loss.sum(dim=1)
         # low_loss = (low_loss * mask.float()).mean() # only average over valid pixels
-        low_loss = self.criterion(low_class, label.long())
-        high_loss = -high_label * high_class
-        high_loss = high_loss.sum(dim=1).mean()
+        valid_high_patches = (high_label.sum(dim=1) > 0).float()
+        num_valid_patches = valid_high_patches.sum()
+        
+        if num_valid_patches > 0:
+            high_loss = (-high_label * high_class).sum(dim=1)
+            high_loss = (high_loss * valid_high_patches).sum() / num_valid_patches
+        else:
+            high_loss = torch.tensor(0.0).to(high_class.device)
 
-        return low_loss + self.scale * high_loss
+        total_loss = low_loss + self.scale * high_loss
+
+        return total_loss
 
 def main():
     try: # open arch config file
@@ -179,6 +226,9 @@ def main():
             low, high = net(curr_in)
             loss = net.loss(low, high, curr_label)
             loss.backward()
+
+            if batch_idx % 100 == 0:
+                net.check_gradients()
 
             optimizer.step()
             
