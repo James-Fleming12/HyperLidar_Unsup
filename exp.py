@@ -87,7 +87,8 @@ class TestContrastConv(nn.Module):
 
         self.criterion = nn.NLLLoss(ignore_index=0)
 
-        self.scale = 0.1
+        self.scale = 0.05
+        self.pre_epochs = 10
 
     def forward(self, x):
         """
@@ -137,7 +138,7 @@ class TestContrastConv(nn.Module):
         low_class = F.log_softmax(low_class, dim=1)
         low_loss = self.criterion(low_class, label.long())
 
-        if current_epoch < 10:
+        if current_epoch < self.pre_epochs:
             return low_loss
 
         high_class = self.high_classifier(high)
@@ -224,11 +225,8 @@ def main():
             
             optimizer.zero_grad()
             low, high = net(curr_in)
-            loss = net.loss(low, high, curr_label)
+            loss = net.loss(low, high, curr_label, epoch)
             loss.backward()
-
-            if batch_idx % 100 == 0:
-                net.check_gradients()
 
             optimizer.step()
             
@@ -237,6 +235,9 @@ def main():
 
             if batch_idx % 100 == 0:
                 print(f"Epoch: {epoch} | Batch: {batch_idx} | Loss: {loss.item():.4f}")
+
+            # if batch_idx % 1000 == 0:
+            #     net.check_gradients()
         
         avg_train_loss = train_loss / num_batches
         
@@ -249,7 +250,7 @@ def main():
                 curr_in = curr[0].to(device)
                 curr_label = curr[2].to(device)
                 low, high = net(curr_in)
-                loss = net.loss(low, high, curr_label)
+                loss = net.loss(low, high, curr_label, epoch)
                 val_loss += loss.item()
                 num_val_batches += 1
         
@@ -259,7 +260,8 @@ def main():
         print(f"Epoch: {epoch} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | LR: {optimizer.param_groups[0]["lr"]:.6f}")
 
         if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
+            if epoch > net.pre_epochs:
+                best_val_loss = avg_val_loss
             torch.save(net.state_dict(), 'extractor_model.pth')
             print(f"Model saved in extractor_model.pth with loss of {best_val_loss:.4f}")
 
