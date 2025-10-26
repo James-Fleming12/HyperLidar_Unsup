@@ -1,4 +1,3 @@
-from itertools import cycle
 import yaml
 import os
 
@@ -12,29 +11,6 @@ from modules.Basic_HD import ExpHD
 
 NUM_CLASSES = 28 # testing on SemanticKITTI
 
-class ModePool2D(nn.Module):
-    def __init__(self, patch_size):
-        super().__init__()
-        self.patch_size = patch_size
-
-    def forward(self, x):
-        orig_dtype = x.dtype
-        x = x.unsqueeze(1) # unfold needs a 4D tensor
-        x = x.float() # also needs it to be a float tensor
-        batch_size, channels, height, width = x.shape
-        patches = F.unfold(x, kernel_size=self.patch_size, stride=self.patch_size)
-        if patches.dim() == 2:
-            patches = patches.unsqueeze(0)
-
-        patch_area = self.patch_size * self.patch_size
-        patches = patches.view(batch_size, channels, patch_area, -1)
-        patches = patches.to(orig_dtype)
-        mode_values, _ = torch.mode(patches, dim=2)
-
-        output = mode_values.view(batch_size, height // self.patch_size, width // self.patch_size)
-
-        return output
-    
 class HistogramPool(nn.Module):
     def __init__(self, patch_size, num_classes):
         super().__init__()
