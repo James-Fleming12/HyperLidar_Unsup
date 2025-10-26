@@ -49,7 +49,7 @@ class HistogramPool(nn.Module):
         
         return output
 
-class TestContrastConv(nn.Module):
+class ContrastConv(nn.Module):
     def __init__(self, patch_size=4, num_classes=NUM_CLASSES):
         super().__init__()
         self.net = ResNet_34(num_classes, False)
@@ -71,6 +71,11 @@ class TestContrastConv(nn.Module):
         returns low and high level features
         """
         low = self.net(x, only_feat = True)
+        high = self.conv(low)
+        return low, high
+    
+    def encode(self, x):
+        low = self.net(x, only_feat=True)
         high = self.conv(low)
         return low, high
     
@@ -173,7 +178,7 @@ def main():
     # test_in = test_in[None, ...] # 1, 5, 64, 512
     # test_la = test_batch[1][0]
     # test_la = test_la[None, ...] # 1, 64, 512
-    net = TestContrastConv()
+    net = ContrastConv()
 
     # low, high = net(test_in) # low: 1, 128, 64, 512   high: 1, 128, 4, 32
 

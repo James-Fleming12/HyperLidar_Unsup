@@ -450,26 +450,11 @@ class LifeHD():
         # plot raw and high-dimensional embeddings
         if plot:
             # plot the tSNE of raw samples with predicted labels
-            #plot_tsne(test_samples, np.array(pred_labels), np.array(test_labels),
-            #          title='raw samples {} {} {}'.format(self.opt.method, self.opt.dataset, acc),
-            #          fig_name=os.path.join(self.opt.save_folder,
-            #                                '{}_sap_{}_{}.png'.format(
-            #                                    loader_idx, self.opt.method, self.opt.dataset)))
-            # plot the tSNE of embeddings with predicted labels
             plot_tsne(test_embeddings, np.array(pred_labels), np.array(test_labels),
                       title='embeddings {} {} {} {}'.format(self.opt.method, self.opt.dataset, acc, mode),
                       fig_name=os.path.join(self.opt.save_folder,
                                             '{}_emb_{}_{}_{}.png'.format(
                                                 loader_idx, self.opt.method, self.opt.dataset, mode)))
-
-            # plot embeddings with class hypervectors
-            #class_hvs = self.model.extract_class_hv()  # numpy array
-            #plot_tsne_graph(class_hvs,
-            #                title='class hvs {} {} {}'.format(self.opt.method, self.opt.dataset, acc),
-            #                fig_name=os.path.join(self.opt.save_folder,
-            #                                      '{}_cls_hv_{}_{}.png'.format(
-            #                                          loader_idx, self.opt.method, self.opt.dataset)))
-
             # save confusion matrix
             np.save(os.path.join(self.opt.save_folder, 'confusion_mat'), cm)
             # plot confusion matrix
