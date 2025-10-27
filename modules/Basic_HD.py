@@ -827,10 +827,8 @@ class ExpHD_Dyn():
         wces = AverageMeter()
         acc = AverageMeter()
         iou = AverageMeter()
-        rand_imgs = []
         evaluator.reset()
         validation_time = []
-        class_func=self.parser.get_xentropy_class_string,
         with torch.no_grad():
             for i, (proj_in, _, proj_labels, _, _, _, _, _, _, _, _, _, _, _, _) in enumerate(tqdm(val_loader, desc="Validation")):
                 B, C, H, W = proj_in.shape[0], proj_in.shape[1], proj_in.shape[2], proj_in.shape[3]
