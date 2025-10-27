@@ -46,21 +46,39 @@ class DualHD:
         self.high_hd = LifeHDModel(opt_model, MODEL_DIR, self.num_classes, self.device)
         self.high_hd_trainer = LifeHD(opt_train, self.train_data, self.val_data, self.num_classes, )
 
-        self.epochs = 2 # temp for testing
+        self.epochs = 50 # temp for testing
         self.evaluator = iouEval(self.num_classes, device, [])
 
     def forward(self, x):
         pass
 
     def train(self):
-        pass    
+        self.train_low()
 
-        # self.low_hd_trainer.train(trainer, self.low_hd) # initial training
-        # for epoch in range(1, self.epochs+1):
-        #     self.low_hd_trainer.retrain(self.train_data, self.low_hd, epoch)
+    def train_low(self):
+        self.low_hd_trainer.train(self.train_data, self.low_hd) # initial training
 
-        #     if epoch % self.validation_frequency == 0 or epoch == self.epochs:
-        #         self.low_hd_trainer.validate(self.val_data, self.low_hd, self.evaluator)
+        best_iou = 0.0
+        for epoch in range(1, self.epochs+1):
+            self.low_hd_trainer.retrain(self.train_data, self.low_hd, epoch)
+
+            if epoch % self.validation_frequency == 0 or epoch == self.epochs:
+                current_iou = self.low_hd_trainer.validate(self.val_data, self.low_hd, self.evaluator)
+                if current_iou > best_iou:
+                    best_iou = current_iou
+                    torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': self.low_hd.state_dict().copy(),
+                        'best_iou': best_iou,
+                        'classify_weights': self.low_hd.classify_weights.clone()
+                    }, f'best_hdc_epoch_{epoch}_iou_{best_iou:.4f}.pth')
+                    
+                    print(f"New model saved with IoU: {best_iou:.4f}")
+
+
+
+    def train_high(self):
+        pass
 
 def main():
     torch.cuda.empty_cache()
