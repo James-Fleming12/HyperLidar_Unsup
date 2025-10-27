@@ -262,6 +262,7 @@ class Model_Dyn(nn.Module):
 
         self.num_classes = num_classes
         self.hd_dim = 10000
+        self.hd_dim = 1000
         self.temperature = 0.01
 
         self.flatten = torch.nn.Flatten()
@@ -322,29 +323,15 @@ class Model_Dyn(nn.Module):
     def encode(self, x, mask=None, PERCENTAGE=None, is_wrong=None):
         if mask is None:
             mask = torch.ones(self.hd_dim, device=self.device).type(torch.bool)
-        # print("x.shape", x.shape)  # torch.Size([1, 5, 64, 512])
 
         with torch.cuda.amp.autocast(enabled=True):
-            x = self.net(x, True)
+            x, _ = self.net(x)
         
-        # print("x.shape", x.shape)  # torch.Size([1, 128, 64, 512])
-        # x = self.flatten(x)
         x = x.permute(0, 2, 3, 1)  # shape: (1, 64, 512, 128)
         x = x.reshape(-1, 128)     # shape: (1*64*512, 128) = (32768, 128)
-        # sample_hv = torch.zeros((x.shape[0], self.hd_dim), device=self.device)
-        # print("x.shape", x.shape)  # torch.Size([32768, 128])
         if PERCENTAGE is not None:
-            # # Pick by the wrong and keep the PERCENTAGE
             wrong_indices = torch.nonzero(is_wrong, as_tuple=False).squeeze()
             num_samples = int(x.shape[0] * PERCENTAGE)  # Calculate the number of samples to select
-            # selected_indices = torch.randperm(x.shape[0], device=x.device)[:num_samples]
-            # print("selected_indices", selected_indices.shape)  # e.g., torch.Size([1638])
-            # print("x", x.shape)  # e.g., torch.Size([1638])
-            # print("x[selected_indices]", x[selected_indices[0]])  # e.g., torch.Size([1638, 128])
-
-            # # print("num_samples", num_samples)  # e.g., 32768 * 0.05 = 1638
-            # # print("wrong_indices", wrong_indices.shape)
-            # # print("is_wrong", is_wrong.shape)  # e.g., torch.Size([32768])
 
             if wrong_indices.numel() >= num_samples:
                 # If there are enough wrong samples, randomly select from them
@@ -363,37 +350,6 @@ class Model_Dyn(nn.Module):
             # print("selected_indices", selected_indices.shape)  # e.g., torch.Size([1638])
             x = x[selected_indices]  # shape: (~PERCENTAGE * 32768, 128)
             assert x.shape[0] == num_samples, f"Expected {num_samples} samples, got {x.shape[0]}"
-
-            # Pick by loss: 
-            # num_samples = int(x.shape[0] * PERCENTAGE)
-            # num_wrongdata = 0
-            # sorted_loss, sorted_indices = torch.sort(is_wrong, descending=True)
-            # top_indices = sorted_indices[:num_wrongdata]
-
-            # all_indices = torch.arange(is_wrong.shape[0], device=x.device)
-            # temp = torch.ones_like(is_wrong, dtype=torch.bool)
-            # temp[top_indices] = False
-            # remaining_indices = all_indices[temp]
-
-            # remaining = num_samples - num_wrongdata
-            # if remaining_indices.numel() >= remaining:
-            #     random_fill_indices = remaining_indices[torch.randperm(remaining_indices.shape[0])[:remaining]]
-            # else:
-            #     # If not enough remaining, take all of them
-            #     random_fill_indices = remaining_indices
-            
-            # selected_indices = torch.cat([top_indices, random_fill_indices], dim=0)
-            # is_wrong[selected_indices] = 0 # Mark the selected indices as used
-
-            # Get top losses and their indices (descending sort)
-            # sorted_loss, sorted_indices = torch.sort(is_wrong, descending=True)
-            # selected_indices = sorted_indices[:num_samples]  # pick top N
-            # is_wrong[selected_indices] = 0.0
-
-            # Filter your data
-            # x = x[selected_indices]
-            # print("x after selection", x.shape)  # e.g., torch.Size([1638, 128])
-            # print("x", x[0])  # e.g., torch.Size([1638])
 
         else:
             selected_indices = torch.arange(x.shape[0], device=x.device)  # use all data
@@ -430,9 +386,6 @@ class Model_Dyn(nn.Module):
         if enc.dtype != self.classify.weight.dtype:
             self.classify = self.classify.to(enc.dtype)
         logits = self.classify(F.normalize(enc))
-
-        #logits = torch.div(logits, self.temperature)
-        #softmax_logits = F.log_softmax(logits, dim=1)
 
         return logits, F.normalize(enc), indices, is_wrong_left # enc is still hd_dim, but some elements are 0
 

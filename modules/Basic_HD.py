@@ -721,8 +721,8 @@ class ExpHD_Dyn():
                     proj_in = proj_in.cuda()
 
                 start = time.time()
-                samples_hv, _ = self.model.encode(proj_in)
-                samples_hv = samples_hv.to(model.low_classifier.dtype)
+                samples_hv, _, _ = self.model.encode(proj_in)
+                samples_hv = samples_hv.to(model.classify_weights.dtype)
 
                 proj_labels = proj_labels.view(-1)  # shape: (btsz*64*512, 1)
                 proj_labels = proj_labels.to(self.device)
@@ -734,8 +734,7 @@ class ExpHD_Dyn():
                 train_time.append(res)
                 start = time.time()
 
-                predictions = self.model.encode(proj_in)
-                predictions = F.log_softmax(self.model.low_classifier(predictions))
+                predictions = self.model.get_predictions(samples_hv)
                 argmax = predictions.argmax(dim=1) # (bsz*size, 1)
 
                 is_wrong = proj_labels != argmax
@@ -754,28 +753,19 @@ class ExpHD_Dyn():
             print("sum of is_wrong_list: ", sum([x.sum().item() for x in self.is_wrong_list if x is not None]))
             print("Mean HDC training time:{}\t std:{}".format(np.mean(train_time), np.std(train_time)))
     
-    def retrain(self, train_loader, model, epoch, logger):  # task_list
+    def retrain(self, train_loader, model, epoch):  # task_list
         """Training of one epoch on single-pass of data"""
         # Set validation frequency
         batchs_per_class = np.floor(len(train_loader) / self.num_classes).astype('int')
         if self.gpu:
             torch.cuda.empty_cache()
         with torch.no_grad():
-            # for idx, (images, labels) in enumerate(train_loader):
-            idx = 0  # batch index
-            cur_class = -1
             total_miss = 0
             retrain_time = []
-            for i, (proj_in, proj_mask, proj_labels, unproj_labels, path_seq, path_name, p_x, p_y, proj_range, unproj_range, _, _, _, _, npoints) in enumerate(tqdm(train_loader, desc="Retraining")):
-                path_seq = path_seq[0]
-                path_name = path_name[0]
-
+            for i, (proj_in, _, proj_labels, _, _, _, _, _, _, _, _, _, _, _, _) in enumerate(tqdm(train_loader, desc="Retraining")):
                 if self.gpu:
                     proj_in = proj_in.cuda()
-                    proj_mask = proj_mask.cuda()
-                    # if self.post:
-                    #     proj_range = proj_range.cuda()
-                    #     unproj_range = unproj_range.cuda()
+
                 start = time.time()
                 model.classify.weight[:] = F.normalize(model.classify_weights)
                 # print("Number of wrongs:", self.is_wrong_list[i].sum().item())
@@ -842,13 +832,7 @@ class ExpHD_Dyn():
         validation_time = []
         class_func=self.parser.get_xentropy_class_string,
         with torch.no_grad():
-            for i, (proj_in, proj_mask, proj_labels, unproj_labels, path_seq, path_name, p_x, p_y, proj_range, unproj_range, _, _, _, _, npoints) in enumerate(tqdm(val_loader, desc="Validation")):
-                # p_x = p_x[0, :npoints]
-                # p_y = p_y[0, :npoints]
-                # proj_range = proj_range[0, :npoints]
-                # unproj_range = unproj_range[0, :npoints]
-                path_seq = path_seq[0]
-                path_name = path_name[0]
+            for i, (proj_in, _, proj_labels, _, _, _, _, _, _, _, _, _, _, _, _) in enumerate(tqdm(val_loader, desc="Validation")):
                 B, C, H, W = proj_in.shape[0], proj_in.shape[1], proj_in.shape[2], proj_in.shape[3]
 
                 # print("labels import correct: ", proj_labels) #torch.Size([1, 64, 512])

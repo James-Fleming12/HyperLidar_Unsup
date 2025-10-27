@@ -10,6 +10,7 @@ from dataset.kitti.parser import Parser
 from modules.Basic_HD import ExpHD_Dyn
 from modules.LifeHD import LifeHD
 from modules.HDC_utils import Model_Dyn
+from modules.ioueval import iouEval
 
 NUM_CLASSES = 28
 MODEL_DIR = "extractor_model.pth"
@@ -29,17 +30,35 @@ class DualHD:
             self.feat_extract.load_state_dict(checkpoint)
         self.feat_extract.eval()
 
-        self.low_hd = Model_Dyn(ARCH, MODEL_DIR, "rp", 1, 0.5, self.num_classes, device)
+        self.low_hd = Model_Dyn(ARCH, MODEL_DIR, "rp", 1, 0.5, self.num_classes, 'cuda')
         self.low_hd_trainer = ExpHD_Dyn(ARCH, DATA, self.low_hd, num_classes)
+
+        self.epochs = 2 # temp for testing
+        self.evaluator = iouEval(self.num_classes, device, [])
 
     def forward(self, x):
         pass
 
     def train(self, parser: Parser):
         trainer = parser.get_train_set()
-        self.low_hd.train(trainer, self.feat_extract)
+        val_train = parser.get_valid_set()
+        print("PRETRAINING STARTING")
+        self.low_hd_trainer.train(trainer, self.low_hd) # initial training
+
+        print("TRAINING STARTING")
+        self.low_hd_trainer.retrain(trainer, self.low_hd, 1)
+
+        print("VALIDATION TRAINING STARTING")
+        self.low_hd_trainer.validate(val_train, self.low_hd, self.evaluator)
+
+        # for epoch in range(1, self.epochs+1):
+        #     self.low_hd_trainer.retrain(trainer, self.low_hd, epoch)
+
+        #     if epoch % self.validation_frequency == 0 or epoch == self.epochs:
+        #         self.low_hd_trainer.validate(val_train, self.low_hd, self.evaluator)
 
 def main():
+    torch.cuda.empty_cache()
     try: # open arch config file
         ARCH = yaml.safe_load(open("config/arch/senet-512.yml", 'r'))
     except Exception as e:
