@@ -255,14 +255,14 @@ def set_model(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, d
     return Model(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device)
 
 class Model_Dyn(nn.Module):
-    def __init__(self, ARCH, model_file, hd_encoder, num_levels, randomness, num_classes, device):
+    def __init__(self, ARCH, model_file, hd_encoder, hd_dim, num_levels, randomness, num_classes, device):
         super(Model_Dyn, self).__init__()
 
         self.device = device
 
         self.num_classes = num_classes
-        self.hd_dim = 10000
-        self.hd_dim = 1000
+        # self.hd_dim = 10000
+        self.hd_dim = hd_dim
         self.temperature = 0.01
 
         self.flatten = torch.nn.Flatten()

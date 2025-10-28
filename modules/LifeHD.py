@@ -169,19 +169,13 @@ class Model(nn.Module):
         self.num_classes = num_classes      # Used in supervised HD
         self.max_classes = opt.max_classes  # Used in unsupervised HD
         self.cur_classes = num_classes      # Used in semi unsupervised HD
-        self.dataset = opt.dataset
         self.method = opt.method
         self.hd_dim = opt.dim
         self.temperature = opt.temperature
-        self.win_size = opt.win_size
 
         self.flatten = torch.nn.Flatten()
 
         self.input_dim = 128
-
-        # set the input dimension
-        self.feature_extractor = opt.feature_ext
-        self.pretrained_on = opt.pretrained_on
 
         with torch.no_grad():
             self.net = exp_extract.ContrastConv(num_classes=num_classes)
@@ -209,27 +203,6 @@ class Model(nn.Module):
 
         elif self.hd_encoder == 'nonlinear':  # Nonlinear encoding
             self.nonlinear_projection = embeddings.Sinusoid(self.input_dim, self.hd_dim)
-
-        elif self.hd_encoder == 'spatiotemporal':  # Time-series ID-level encoding
-            # Generate id-level value hv for each floating value
-            #self.value = embeddings.Level(opt.num_levels, self.hd_dim,
-            #                              randomness=opt.randomness)
-            # Create a random hv for each position, for binding with the value hv
-            #self.position = embeddings.Random(self.input_dim, self.hd_dim)
-
-            # Use the time series encoder
-            self.timeseries_Encoder = timeseries_Encoder(opt.dataset,
-                                                         self.input_dim,
-                                                         opt.num_levels,
-                                                         opt.dim,
-                                                         opt.flipping)
-        
-        else:  # No encoder, use raw samples
-            if self.dataset == 'mhealth' or \
-                self.dataset == 'har_timeseries':
-                self.hd_dim = self.input_dim * self.win_size
-            else:
-                self.hd_dim = self.input_dim
 
         # Set classify
         if self.method == 'LifeHD':
@@ -267,9 +240,6 @@ class Model(nn.Module):
         if mask is None:
             mask = torch.ones(self.hd_dim, device=self.device).type(torch.bool)
 
-        if self.feature_extractor != 'none':
-            x = self.net(x)
-
         x = self.flatten(x)
         sample_hv = torch.zeros((x.shape[0], self.hd_dim), device=self.device)
 
@@ -285,17 +255,6 @@ class Model(nn.Module):
 
         elif self.hd_encoder == 'nonlinear':
             sample_hv[:, mask] = self.nonlinear_projection(x)[:, mask]
-
-        elif self.hd_encoder == 'spatiotemporal':
-            # First restore the time series order
-            x = x.reshape((-1, self.win_size, self.input_dim))
-            # tmp_hv = functional.bind(self.position.weight[:, mask],
-            #                         self.value(x)[:, :, mask])  # bsz x num_features x hd_dim
-            # Bundle
-            # tmp_hv = functional.multiset(tmp_hv)  # bsz x T x dim
-            # tmp_hv = functional.hard_quantize(tmp_hv)
-            # Permutation and bind
-            # sample_hv[:, mask] = functional.bind_sequence(tmp_hv)
             
             enc = []
             batch_size = x.shape[0]

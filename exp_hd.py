@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 import yaml
 import os
 
@@ -34,26 +35,35 @@ class DualHD:
         self.train_data = parser.get_train_set()
         self.val_data = parser.get_valid_set()
 
-        opt_train = {
+        self.epochs = 50 # temp for testing
+        self.hd_dim = 1000
+        self.randomness = 0.5 # ...
+        self.validation_frequency = 5
+        self.evaluator = iouEval(self.num_classes, device, [])
 
-        }
-        opt_model = {
-            "hd_encoder": "rp"
-        }
+        opt_model = SimpleNamespace(
+            dim=self.hd_dim,
+            hd_encoder="rp",
+            max_classes=20,
+            method="LifeHD",
+            temperature = self.randomness, # ...
+        )
 
-        self.low_hd = Model_Dyn(ARCH, MODEL_DIR, "rp", 1, 0.5, self.num_classes, 'cuda')
+        opt_train = SimpleNamespace(
+            dim=self.hd_dim
+        )
+
+        self.low_hd = Model_Dyn(ARCH, MODEL_DIR, "rp", self.hd_dim, 1, self.randomness, self.num_classes, 'cuda')
         self.low_hd_trainer = ExpHD_Dyn(ARCH, DATA, self.low_hd, num_classes)
         self.high_hd = LifeHDModel(opt_model, MODEL_DIR, self.num_classes, self.device)
-        self.high_hd_trainer = LifeHD(opt_train, self.train_data, self.val_data, self.num_classes, )
-
-        self.epochs = 50 # temp for testing
-        self.evaluator = iouEval(self.num_classes, device, [])
+        self.high_hd_trainer = LifeHD(opt_train, self.train_data, self.val_data, self.num_classes, "LifeHD", self.device)
 
     def forward(self, x):
         pass
 
     def train(self):
-        self.train_low()
+        # self.train_low()
+        self.train_high()
 
     def train_low(self):
         self.low_hd_trainer.train(self.train_data, self.low_hd) # initial training
@@ -74,8 +84,6 @@ class DualHD:
                     }, f'best_hdc_epoch_{epoch}_iou_{best_iou:.4f}.pth')
                     
                     print(f"New model saved with IoU: {best_iou:.4f}")
-
-
 
     def train_high(self):
         pass
