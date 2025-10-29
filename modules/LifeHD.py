@@ -414,7 +414,6 @@ class LifeHD():
 
     def train(self, epoch):
         """Training of one epoch on single-pass of data"""
-        """Unsupervised method. Should not use the labels"""
         # Set validation frequency
         val_freq = np.floor(len(self.train_loader) / VAL_CNT).astype('int')
         batchs_per_class = np.floor(len(self.train_loader) / self.num_classes).astype('int')

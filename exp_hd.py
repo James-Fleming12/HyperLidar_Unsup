@@ -56,7 +56,7 @@ class DualHD:
         self.low_hd = Model_Dyn(ARCH, MODEL_DIR, "rp", self.hd_dim, 1, self.randomness, self.num_classes, 'cuda')
         self.low_hd_trainer = ExpHD_Dyn(ARCH, DATA, self.low_hd, num_classes)
         self.high_hd = LifeHDModel(opt_model, MODEL_DIR, self.num_classes, self.device)
-        self.high_hd_trainer = LifeHD(opt_train, self.train_data, self.val_data, self.num_classes, "LifeHD", self.device)
+        self.high_hd_trainer = LifeHD(opt_train, self.train_data, self.val_data, self.num_classes, self.high_hd, self.device)
 
     def forward(self, x):
         pass
@@ -82,11 +82,11 @@ class DualHD:
                         'best_iou': best_iou,
                         'classify_weights': self.low_hd.classify_weights.clone()
                     }, f'best_hdc_epoch_{epoch}_iou_{best_iou:.4f}.pth')
-                    
+
                     print(f"New model saved with IoU: {best_iou:.4f}")
 
     def train_high(self):
-        pass
+        self.high_hd_trainer.start()
 
 def main():
     torch.cuda.empty_cache()
