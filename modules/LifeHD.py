@@ -191,20 +191,19 @@ class Model(nn.Module):
 
         self.hd_encoder = opt.hd_encoder
         if self.hd_encoder == 'rp':  # Random projection encoding
-            # Generate a random projection matrix
             self.projection = embeddings.Projection(self.input_dim, self.hd_dim)
 
         elif self.hd_encoder == 'idlevel':  # ID-level encoding
-            # Generate id-level value hv for each floating value
             self.value = embeddings.Level(opt.num_levels, self.hd_dim, 
                                           randomness=opt.randomness)
-            # Create a random hv for each position, for binding with the value hv
             self.position = embeddings.Random(self.input_dim, self.hd_dim)
 
         elif self.hd_encoder == 'nonlinear':  # Nonlinear encoding
             self.nonlinear_projection = embeddings.Sinusoid(self.input_dim, self.hd_dim)
 
         # Set classify
+        self.cluster_samples = {}
+
         if self.method == 'LifeHD':
             self.classify = nn.Linear(self.hd_dim, self.max_classes, bias=False)
             self.classify_sample_cnt = torch.zeros(self.max_classes).to(self.device)
@@ -217,8 +216,6 @@ class Model(nn.Module):
             self.classify_sample_cnt = torch.zeros((self.num_classes, 1)).to(self.device)
 
         elif self.method == 'LifeHDsemi':
-            # The first num_class in the classify is for labeled classes,
-            # while the remaining are unlabeled prototypes
             self.classify = nn.Linear(self.hd_dim, self.max_classes, bias=False)
             self.classify_sample_cnt = torch.zeros(self.max_classes).to(self.device)
             self.dist_mean = torch.zeros(self.max_classes).to(self.device)
@@ -358,12 +355,15 @@ class LifeHD():
         if idx == 0:
             self.warmup_hvs = sample_hv
             self.warmup_labels = label
+            
+            self.warmup_indices = torch.arange(idx * sample_hv.shape[0], (idx + 1) * sample_hv.shape[0])
 
         elif idx < self.opt.warmup_batches:
             self.warmup_hvs = torch.cat((self.warmup_hvs, sample_hv), dim=0)
             self.warmup_labels = torch.cat((self.warmup_labels, label))
-            # print(self.warmup_hvs.shape)  # (idx, D)
-            # print(self.warmup_labels.shape)  # (idx)
+            
+            new_indices = torch.arange(idx * sample_hv.shape[0], (idx + 1) * sample_hv.shape[0])
+            self.warmup_indices = torch.cat((self.warmup_indices, new_indices))
 
         elif idx >= self.opt.warmup_batches:
             # End of the warmup session
@@ -382,6 +382,9 @@ class LifeHD():
                 # print(i, np.sum(cluster_mask))
                 self.model.classify_weights[ix] = self.warmup_hvs[cluster_mask].sum(dim=0)  # size 1xD
                 self.model.classify_sample_cnt[ix] = cluster_mask.sum()
+
+                labels_in_cluster = self.warmup_labels[cluster_mask].tolist()
+                self.model.cluster_labels[ix] = labels_in_cluster
 
                 # Only update mean and std when there are more than 1 sample in the init cluster
                 #if cluster_mask.sum() > 1:
@@ -410,6 +413,7 @@ class LifeHD():
 
             del self.warmup_hvs
             del self.warmup_labels
+            del self.warmup_indices
             self.warmup_done = True
 
     def train(self, epoch):
@@ -422,8 +426,9 @@ class LifeHD():
             class_batch_idx = 0  # batch index in the current class
             cur_class = -1
 
-            for idx, (image, label) in enumerate(self.train_loader):
+            for idx, (image, _, label, _, _, _, _, _, _, _, _, _, _, _, _) in enumerate(tqdm(self.train_loader, desc="Training")):
 
+                print(label.size()) # labels are expected to be singular scalar values
                 # Validation
                 if idx > self.opt.warmup_batches and idx % val_freq == 0:
                     # Trick: trim the clusters that have samples less than 10
@@ -527,7 +532,8 @@ class LifeHD():
                     self.add_sample_hv_to_exist_class(sample_hv[~novel_detect_mask], 
                                                       pred_class[~novel_detect_mask], 
                                                       simil_to_class[~novel_detect_mask], 
-                                                      idx)
+                                                      idx, 
+                                                      label) # specifically for new function def
 
                     # A novelty is detected, need to create new classes
                     if novel_detect_mask.sum() > 0:
@@ -536,7 +542,8 @@ class LifeHD():
                         #print('pred class ', pred_class[novel_detect_mask].cpu().numpy())
                         #print('simil to class ', simil_to_class[novel_detect_mask].cpu().numpy())
                         #print('simil threshold ', simil_threshold[novel_detect_mask].cpu().numpy())
-                        self.add_sample_hv_to_novel_class(sample_hv[novel_detect_mask], idx)
+                        self.add_sample_hv_to_novel_class(sample_hv[novel_detect_mask], idx, 
+                                                          label) # specifically for new function def
 
                         # Revert the mask dim to dim
                         if self.opt.mask_mode == 'adaptive':
@@ -636,7 +643,7 @@ class LifeHD():
         
         return acc, purity
 
-    def add_sample_hv_to_exist_class(self, sample_hv, pred_class, simil_to_class, batch_idx):
+    def add_sample_hv_to_exist_class(self, sample_hv, pred_class, simil_to_class, batch_idx, labels):
         """
         Use new sample_hv to update the predicted class in model
 
@@ -656,7 +663,11 @@ class LifeHD():
             old_sample_cnt = self.model.classify_sample_cnt[cs].item()
             self.model.classify_weights[cs, self.mask] += sample_hv[mask][:, self.mask].sum(dim=0)
             self.model.classify_sample_cnt[cs] += mask.sum()
-            # print(old_sample_cnt)
+            
+            new_labels = labels[mask].tolist()
+            if cs not in self.model.cluster_labels:
+                self.model.cluster_labels[cs] = []
+            self.model.cluster_labels[cs].extend(new_labels)
 
             if old_sample_cnt > 1: # Update the mean and std, which are scalar
                 self.model.dist_std[cs] = \
@@ -677,7 +688,7 @@ class LifeHD():
 
             self.model.last_edit[cs] = batch_idx
 
-    def add_sample_hv_to_novel_class(self, sample_hv, batch_idx):
+    def add_sample_hv_to_novel_class(self, sample_hv, batch_idx, labels):
         """
         Use new sample_hv to create a novel class after detecting novelty
 
@@ -702,6 +713,8 @@ class LifeHD():
         self.model.classify_weights[new_cs] = sample_hv.sum(dim=0)
         self.model.classify_sample_cnt[new_cs] = sample_hv.shape[0]
         self.model.last_edit[new_cs] = batch_idx
+
+        self.model.cluster_labels[new_cs] = labels.tolist()
 
         if sample_hv.shape[0] > 1:  # more than one sample
             dist_to_cen = F.normalize(sample_hv) @ \
@@ -735,6 +748,7 @@ class LifeHD():
         old_dist_mean = copy.deepcopy(self.model.dist_mean[:old_classes])
         old_dist_std = copy.deepcopy(self.model.dist_std[:old_classes])
         old_last_edit = copy.deepcopy(self.model.last_edit[:old_classes])
+        old_labels = copy.deepcopy(self.model.cluster_labels)
 
         self.model.classify.weight.data.fill_(0.0)
         self.model.classify_weights = copy.deepcopy(self.model.classify.weight)
@@ -742,6 +756,7 @@ class LifeHD():
         self.model.dist_mean = torch.zeros(self.model.max_classes).to(self.device)
         self.model.dist_std = torch.zeros(self.model.max_classes).to(self.device)
         self.model.last_edit = - np.ones(self.model.max_classes)
+        self.model.cluster_labels = {}
 
         # Clean K2 labels to remove the non-assigned clusters
         sorted_labels = sorted(list(set(K2.labels_)))
@@ -757,8 +772,17 @@ class LifeHD():
         self.merge += len(K2.labels_) - new_nc
         for ix in range(new_nc):
             old_cluster_mask = (new_labels == ix)
+            old_cluster_indices = np.arange(len(K2.labels_))[old_cluster_mask]
+
             self.model.classify_weights[ix] = old_weights[old_cluster_mask].sum(dim=0)  # size 1xD
             self.model.classify_sample_cnt[ix] = old_cnt[old_cluster_mask].sum()
+            
+            merged_labels = []
+            for old_idx in old_cluster_indices:
+                if old_idx in old_labels:
+                    merged_labels.extend(old_labels[old_idx])
+            self.model.cluster_labels[ix] = merged_labels
+
             print('{} old clusters {}\n\twith cnt {}'.format(
                 old_cluster_mask.sum(),
                 np.arange(len(K2.labels_))[old_cluster_mask],
@@ -810,3 +834,33 @@ class LifeHD():
         self.model.last_edit[:new_classes] = old_last_edit[mask_to_keep]
 
         self.model.classify.weight[:] = F.normalize(self.model.classify_weights)
+
+    def get_cluster_labels(self, cluster_id):
+        """Get all labels in a specific cluster"""
+        return self.model.cluster_labels.get(cluster_id, [])
+
+    def get_all_cluster_labels(self):
+        """Get label distribution for all clusters"""
+        return {
+            cluster_id: {
+                'labels': labels,
+                'sample_count': len(labels),
+                'label_distribution': {label: labels.count(label) for label in set(labels)}
+            }
+            for cluster_id, labels in self.model.cluster_labels.items()
+            if labels  # Only return clusters with samples
+        }
+
+    def get_cluster_label_stats(self):
+        """Get statistics about label distribution in clusters"""
+        stats = {}
+        for cluster_id, labels in self.model.cluster_labels.items():
+            if labels:
+                unique_labels = set(labels)
+                stats[cluster_id] = {
+                    'total_samples': len(labels),
+                    'unique_labels': len(unique_labels),
+                    'dominant_label': max(set(labels), key=labels.count),
+                    'label_counts': {label: labels.count(label) for label in unique_labels}
+                }
+        return stats

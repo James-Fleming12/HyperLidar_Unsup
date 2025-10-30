@@ -50,7 +50,10 @@ class DualHD:
         )
 
         opt_train = SimpleNamespace(
-            dim=self.hd_dim
+            dim=self.hd_dim,
+            epochs = ARCH["train"]["max_epochs"],
+            warmup_batches = 5, # ????
+            mask_mode = None, # or adaptive???
         )
 
         self.low_hd = Model_Dyn(ARCH, MODEL_DIR, "rp", self.hd_dim, 1, self.randomness, self.num_classes, 'cuda')
