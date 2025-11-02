@@ -75,10 +75,11 @@ class ContrastConv(nn.Module):
         return low, high
     
     def encode(self, x):
-        low = self.net(x, only_feat=True)
-        high = self.conv(low)
-        return low, high
-    
+        with torch.no_grad():
+            low = self.net(x, only_feat=True)
+            high = self.conv(low)
+            return low, high
+        
     def check_gradients(self):
         """Check gradient flow through the network"""
         print(f"\n{'='*50}")

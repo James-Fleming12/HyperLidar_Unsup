@@ -27,6 +27,8 @@ novelty_detect = []
 class_shift = []
 VAL_CNT = 10
 
+EIGEN_MAX = 2000
+
 def get_nc_laplacian(class_hvs, batch_idx, opt):
     """
     Obtain the number of clusters by searching for plateaus
@@ -98,13 +100,17 @@ def get_nc(class_hvs, pair_simil, thres, batch_idx, opt, warmup_done):
         U: the eigenvectors of L
     """
     print('warmup done:', warmup_done)
+    if class_hvs.shape[0] > EIGEN_MAX:
+        print(f"Subsampled from {class_hvs.shape[0]} to {EIGEN_MAX} for eigen decomposition")
+        indices = np.random.choice(class_hvs.shape[0], EIGEN_MAX, replace=False)
+        class_hvs = class_hvs[indices]
     #if not warmup_done:
     L = kneighbors_graph(class_hvs, 4, include_self=True).toarray()
     #else:
     #    print('not warmup!!')
     #    L = (pair_simil > thres).astype('int')
-    print(pair_simil)
-    print(L)
+    # print(pair_simil)
+    # print(L)
 
     # plot_tsne_graph(class_hvs,
     #                fig_name=os.path.join(opt.save_folder,
@@ -187,11 +193,13 @@ class Model(nn.Module):
             self.net.load_state_dict(checkpoint['state_dict'])
         else:
             self.net.load_state_dict(checkpoint)
+        self.net = self.net.to(self.device)
         self.net.eval()
 
         self.hd_encoder = opt.hd_encoder
         if self.hd_encoder == 'rp':  # Random projection encoding
             self.projection = embeddings.Projection(self.input_dim, self.hd_dim)
+            self.projection = self.projection.to(self.device)
 
         elif self.hd_encoder == 'idlevel':  # ID-level encoding
             self.value = embeddings.Level(opt.num_levels, self.hd_dim, 
@@ -203,6 +211,7 @@ class Model(nn.Module):
 
         # Set classify
         self.cluster_samples = {}
+        self.cluster_labels = {}
 
         if self.method == 'LifeHD':
             self.classify = nn.Linear(self.hd_dim, self.max_classes, bias=False)
@@ -229,15 +238,18 @@ class Model(nn.Module):
 
         # self.classify_weights is the sum of all hypervectors, so its scale
         # accounts the number of samples in this class/cluster
-        self.classify_weights = copy.deepcopy(self.classify.weight)
+        self.classify_weights = copy.deepcopy(self.classify.weight).to(self.device)
         # print(self.classify_weights.shape)  # size num_class x HD dim
-
 
     def encode(self, x, mask=None):
         if mask is None:
             mask = torch.ones(self.hd_dim, device=self.device).type(torch.bool)
 
-        x = self.flatten(x)
+        _, x = self.net.encode(x)
+
+        # x = self.flatten(x)
+        x = x.permute(0, 2, 3, 1)
+        x = x.reshape(-1, x.shape[-1])
         sample_hv = torch.zeros((x.shape[0], self.hd_dim), device=self.device)
 
         if self.hd_encoder == 'rp':
@@ -321,6 +333,7 @@ class LifeHD():
 
         # build model and criterion
         self.model = model
+        self.model = model.to(device)
 
         # tensorboard
         # self.logger = logger
@@ -366,29 +379,41 @@ class LifeHD():
             self.warmup_indices = torch.cat((self.warmup_indices, new_indices))
 
         elif idx >= self.opt.warmup_batches:
-            # End of the warmup session
-            # Determine the number of clusters, and run spectral clustering to create init clusters
-            nc, L, U = get_nc(self.warmup_hvs.cpu().numpy(), None, None, 
-                              idx, self.opt, self.warmup_done)
-            # if nc is not valid, start with half the number of classes as default
+            print("=== Starting spectral clustering ===")
+            print(f"Warmup data shape: {self.warmup_hvs.shape}")
+
+            warmup_hvs_cpu = self.warmup_hvs.cpu()
+            warmup_labels_cpu = self.warmup_labels.cpu()
+            
+            warmup_data_np = warmup_hvs_cpu.numpy()
+            if warmup_data_np.shape[0] > EIGEN_MAX:
+                indices = np.random.choice(warmup_data_np.shape[0], EIGEN_MAX, replace=False)
+                clustering_data = warmup_data_np[indices]
+                original_indices = indices
+            else:
+                clustering_data = warmup_data_np
+                original_indices = np.arange(warmup_data_np.shape[0])
+
+            nc, L, U = get_nc(clustering_data, None, None, idx, self.opt, self.warmup_done)
             nc = nc if 0 < nc < self.model.max_classes else int(0.5 * self.model.max_classes)
 
             K2 = KMeans(nc)
             K2.fit(U[:, :nc])
 
-            # Init cluster
             for ix in range(nc):
                 cluster_mask = (K2.labels_ == ix)
-                # print(i, np.sum(cluster_mask))
-                self.model.classify_weights[ix] = self.warmup_hvs[cluster_mask].sum(dim=0)  # size 1xD
+                cluster_data_tensor = torch.tensor(clustering_data[cluster_mask], device=self.device)
+                
+                self.model.classify_weights[ix] = cluster_data_tensor.sum(dim=0)
                 self.model.classify_sample_cnt[ix] = cluster_mask.sum()
-
-                labels_in_cluster = self.warmup_labels[cluster_mask].tolist()
+                
+                print(warmup_labels_cpu.size())
+                labels_in_cluster = warmup_labels_cpu[original_indices[cluster_mask]].tolist()
                 self.model.cluster_labels[ix] = labels_in_cluster
 
                 # Only update mean and std when there are more than 1 sample in the init cluster
                 #if cluster_mask.sum() > 1:
-                dist_to_cen = F.normalize(self.warmup_hvs[cluster_mask]) @ \
+                dist_to_cen = F.normalize(cluster_data_tensor) @ \
                     F.normalize(self.model.classify_weights[ix].view(1, -1)).T  
                     # Should be size sample_cntx1
                 self.model.dist_mean[ix] = torch.mean(dist_to_cen)  # scalar
@@ -405,7 +430,8 @@ class LifeHD():
             self.mask[sort_idx[:self.opt.mask_dim]] = 1
             self.cur_mask_dim = self.opt.mask_dim
 
-            print('init # of clusters after warmup: {}'.format(nc))
+            print(f"Initialized {nc} clusters")
+            print(f"Cluster sample counts: {self.model.classify_sample_cnt[:nc].cpu().numpy()}")
             #plot_tsne(self.warmup_hvs.cpu().numpy(),
             #          K2.labels_, self.warmup_labels.cpu().numpy(),
             #          title='warmup spectral clustering',
@@ -421,14 +447,17 @@ class LifeHD():
         # Set validation frequency
         val_freq = np.floor(len(self.train_loader) / VAL_CNT).astype('int')
         batchs_per_class = np.floor(len(self.train_loader) / self.num_classes).astype('int')
+        print(f"\n=== Starting Epoch {epoch} ===")
 
         with torch.no_grad():
             class_batch_idx = 0  # batch index in the current class
             cur_class = -1
 
             for idx, (image, _, label, _, _, _, _, _, _, _, _, _, _, _, _) in enumerate(tqdm(self.train_loader, desc="Training")):
+                
+                if idx % 100 == 0:  # Print every 100 batches
+                    print(f"Batch {idx}/{len(self.train_loader)}")
 
-                print(label.size()) # labels are expected to be singular scalar values
                 # Validation
                 if idx > self.opt.warmup_batches and idx % val_freq == 0:
                     # Trick: trim the clusters that have samples less than 10
@@ -465,11 +494,6 @@ class LifeHD():
                     self.mask[sort_idx[:self.opt.mask_dim]] = 1
                     self.cur_mask_dim = self.opt.mask_dim
 
-                if label[0] > cur_class:
-                    class_shift.append(idx)
-                    class_batch_idx = 0
-                    cur_class = label[0]
-                
                 if self.opt.rotation > 0.0:
                     rot_degrees = self.opt.rotation / batchs_per_class * class_batch_idx
                     image = rotate(image, rot_degrees)
@@ -483,7 +507,7 @@ class LifeHD():
                 # Check if warmup has ended
                 if not self.warmup_done:
                     self.warmup(idx, sample_hv, label)
-
+                    print(f"Warmup: batch {idx}, samples: {len(self.warmup_hvs)}")
                 else:
                     # Normal session after warmup
                     #################################################
@@ -491,13 +515,6 @@ class LifeHD():
                     #################################################
                     simil_to_class, pred_class = torch.max(outputs, dim=-1)
                     pred_class_samples = self.model.classify_sample_cnt[pred_class]
-
-                    #print(
-                    #    '\n\nidx: {}/{}\ncur_label: {}\nmin_dist: {}\npred_class: {}'.format(
-                    #        idx, len(self.train_loader),
-                    #        label.cpu().numpy(),
-                    #        simil_to_class.cpu().numpy(),
-                    #        pred_class.cpu().numpy()))
 
                     assert pred_class_samples.min() > 0, \
                         'Predicted class {} has zero sample!'
@@ -511,22 +528,12 @@ class LifeHD():
                     # in the pred_class's distance distribution
                     simil_threshold = self.model.dist_mean[pred_class] - \
                                         self.opt.beta * self.model.dist_std[pred_class]
-                    # simil_threshold = simil_threshold * self.cur_mask_dim / self.opt.dim
-                    #print('\tmean {}\n\tstd {}\n\tdist_thres {}'.format(
-                    #    self.model.dist_mean[pred_class].cpu().numpy(),
-                    #    self.model.dist_std[pred_class].cpu().numpy(),
-                    #    simil_threshold.cpu().numpy()))
-                    #print('threshold: ', simil_threshold.cpu().numpy())
-                    #print('simil to class: ', simil_to_class.cpu().numpy())
 
                     # To show as a novelty, we require the samples in the existing cluster
                     # is larger than a fixed number (default is 10), so we have sufficient
                     # confidence
                     novel_detect_mask = (simil_to_class < simil_threshold) & \
                           (pred_class_samples > 10)  # (batch_size, D)
-                    # print(simil_to_class < simil_threshold)
-                    # print(pred_class_samples > 10)
-                    # print(novel_detect_mask)
 
                     # Add the new sample to the predicted class
                     self.add_sample_hv_to_exist_class(sample_hv[~novel_detect_mask], 
@@ -537,11 +544,8 @@ class LifeHD():
 
                     # A novelty is detected, need to create new classes
                     if novel_detect_mask.sum() > 0:
-                        #print('Novelty detected!')
+                        print('Novelty detected!')
                         novelty_detect.append(idx)
-                        #print('pred class ', pred_class[novel_detect_mask].cpu().numpy())
-                        #print('simil to class ', simil_to_class[novel_detect_mask].cpu().numpy())
-                        #print('simil threshold ', simil_threshold[novel_detect_mask].cpu().numpy())
                         self.add_sample_hv_to_novel_class(sample_hv[novel_detect_mask], idx, 
                                                           label) # specifically for new function def
 
@@ -551,21 +555,23 @@ class LifeHD():
                             self.cur_mask_dim = self.opt.dim
                             self.last_novel = idx
 
+                    novel_count = novel_detect_mask.sum().item()
+                    if novel_count > 0:
+                        print(f"Novelty detected! {novel_count} new samples")
+                    
+                    # Track cluster statistics
+                    if idx % 50 == 0:
+                        active_clusters = (self.model.classify_sample_cnt > 0).sum().item()
+                        total_samples = self.model.classify_sample_cnt.sum().item()
+                        print(f"Active clusters: {active_clusters}, Total samples: {total_samples}")
+
                 self.model.classify.weight[:] = F.normalize(self.model.classify_weights)
-
-                #print('sample cnt', self.model.classify_sample_cnt[:self.model.cur_classes].cpu().numpy().astype('int'))
-                #print('mean', self.model.dist_mean[:self.model.cur_classes].cpu().numpy())
-                #print('std', self.model.dist_std[:self.model.cur_classes].cpu().numpy())
-
-                self.logger.log_value('mask_dim', self.cur_mask_dim, idx)
 
                 class_batch_idx += 1
 
             if self.opt.merge_mode != 'no_trim':
                 self.trim_clusters()
-            print(self.model.classify_sample_cnt)
-            plot_novelty_detection(class_shift, novelty_detect, self.opt.save_folder)
-            
+            # plot_novelty_detection(class_shift, novelty_detect, self.opt.save_folder)
 
     def validate(self, epoch, loader_idx, plot, mode):  # task_list
         """Validation, evaluate linear classification accuracy and kNN accuracy"""

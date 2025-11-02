@@ -52,12 +52,14 @@ class DualHD:
         opt_train = SimpleNamespace(
             dim=self.hd_dim,
             epochs = ARCH["train"]["max_epochs"],
-            warmup_batches = 5, # ????
+            warmup_batches = 1, # ????
             mask_mode = None, # or adaptive???
+            rotation = 0.0,
         )
 
-        self.low_hd = Model_Dyn(ARCH, MODEL_DIR, "rp", self.hd_dim, 1, self.randomness, self.num_classes, 'cuda')
+        self.low_hd = Model_Dyn(ARCH, MODEL_DIR, "rp", self.hd_dim, 1, self.randomness, self.num_classes, self.device)
         self.low_hd_trainer = ExpHD_Dyn(ARCH, DATA, self.low_hd, num_classes)
+
         self.high_hd = LifeHDModel(opt_model, MODEL_DIR, self.num_classes, self.device)
         self.high_hd_trainer = LifeHD(opt_train, self.train_data, self.val_data, self.num_classes, self.high_hd, self.device)
 
