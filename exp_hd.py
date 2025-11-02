@@ -9,7 +9,8 @@ import torch.nn.functional as F
 from exp_extract import ContrastConv
 from dataset.kitti.parser import Parser
 from modules.Basic_HD import ExpHD_Dyn
-from modules.LifeHD import LifeHD, Model as LifeHDModel
+from modules.LifeHD import Model as LifeHDModel
+from modules.LifeHD2 import LifeHD
 from modules.HDC_utils import Model_Dyn
 from modules.ioueval import iouEval
 
@@ -55,6 +56,8 @@ class DualHD:
             warmup_batches = 1, # ????
             mask_mode = None, # or adaptive???
             rotation = 0.0,
+            mask_dim = int(self.hd_dim * 0.6),
+            beta = 3, # ???
         )
 
         self.low_hd = Model_Dyn(ARCH, MODEL_DIR, "rp", self.hd_dim, 1, self.randomness, self.num_classes, self.device)

@@ -23,6 +23,8 @@ from torchhd import embeddings, functional
 import exp_extract
 import torch.nn as nn
 
+from exp_extract import HistogramPool
+
 novelty_detect = []
 class_shift = []
 VAL_CNT = 10
@@ -106,15 +108,6 @@ def get_nc(class_hvs, pair_simil, thres, batch_idx, opt, warmup_done):
         class_hvs = class_hvs[indices]
     #if not warmup_done:
     L = kneighbors_graph(class_hvs, 4, include_self=True).toarray()
-    #else:
-    #    print('not warmup!!')
-    #    L = (pair_simil > thres).astype('int')
-    # print(pair_simil)
-    # print(L)
-
-    # plot_tsne_graph(class_hvs,
-    #                fig_name=os.path.join(opt.save_folder,
-    #                                      'cls_hv_{}.png'.format(batch_idx)))
 
     # Compute the eigenvalues and eigenvectors of L
     (S, U) = np.linalg.eig(L)
@@ -133,15 +126,6 @@ def get_nc(class_hvs, pair_simil, thres, batch_idx, opt, warmup_done):
     print('Idx: {} nc={}'.format(
         batch_idx, nc
     ))
-
-    # Plot sorted eigenvalues
-    #fig = plt.figure()
-    #plt.plot(np.arange(S.size), S)
-    #plt.title('Idx: {} nc={}'.format(
-    #    batch_idx, nc
-    #))
-    #plt.savefig(os.path.join(opt.save_folder, 'eigenvalue_{}.png'.format(batch_idx)))
-    #plt.close(fig)
 
     return nc, L, U
 
@@ -331,12 +315,16 @@ class LifeHD():
         self.val_loader = val_loader
         self.num_classes = num_classes
 
+        self.patch_size = 4
+
         # build model and criterion
         self.model = model
         self.model = model.to(device)
 
         # tensorboard
         # self.logger = logger
+
+        self.pool = HistogramPool(self.patch_size, self.num_classes) # patch size and classes
 
         # warmup status
         self.warmup_done = False
@@ -384,6 +372,8 @@ class LifeHD():
 
             warmup_hvs_cpu = self.warmup_hvs.cpu()
             warmup_labels_cpu = self.warmup_labels.cpu()
+
+            # warmup_labels_cpu = torch.argmax(warmup_labels_cpu, dim=1) # get most frequent class only during warmup
             
             warmup_data_np = warmup_hvs_cpu.numpy()
             if warmup_data_np.shape[0] > EIGEN_MAX:
@@ -406,10 +396,13 @@ class LifeHD():
                 
                 self.model.classify_weights[ix] = cluster_data_tensor.sum(dim=0)
                 self.model.classify_sample_cnt[ix] = cluster_mask.sum()
-                
-                print(warmup_labels_cpu.size())
+
+                warmup_labels_cpu = warmup_labels_cpu.flatten()
+
                 labels_in_cluster = warmup_labels_cpu[original_indices[cluster_mask]].tolist()
-                self.model.cluster_labels[ix] = labels_in_cluster
+                
+                # print(dict(label_counts))
+                self.model.cluster_labels[ix] = self.gen_store_labels(labels_in_cluster)
 
                 # Only update mean and std when there are more than 1 sample in the init cluster
                 #if cluster_mask.sum() > 1:
@@ -457,6 +450,10 @@ class LifeHD():
                 
                 if idx % 100 == 0:  # Print every 100 batches
                     print(f"Batch {idx}/{len(self.train_loader)}")
+
+                # create proper labels
+                # label = net.gen_label(label)
+                label = self.gen_label(label)
 
                 # Validation
                 if idx > self.opt.warmup_batches and idx % val_freq == 0:
@@ -507,7 +504,8 @@ class LifeHD():
                 # Check if warmup has ended
                 if not self.warmup_done:
                     self.warmup(idx, sample_hv, label)
-                    print(f"Warmup: batch {idx}, samples: {len(self.warmup_hvs)}")
+                    # print(f"Warmup: batch {idx}, samples: {len(self.warmup_hvs)}")
+                    print(f"Warmup: batch {idx}")
                 else:
                     # Normal session after warmup
                     #################################################
@@ -660,11 +658,15 @@ class LifeHD():
             batch_idx: the batch index in the training stream for logging
             self.mask: mask for effieiency purposes
         """
+
         pred_class_set = np.unique(pred_class.cpu().numpy())
+        # labels = torch.argmax(labels, dim=1).reshape(-1)
         # print(pred_class_set)
 
         for cs in pred_class_set:
+            print(cs.size())
             mask = (pred_class == cs)
+            print(mask.size())
             old_sample_hv = copy.deepcopy(self.model.classify_weights[cs].view(1, -1))
             old_sample_cnt = self.model.classify_sample_cnt[cs].item()
             self.model.classify_weights[cs, self.mask] += sample_hv[mask][:, self.mask].sum(dim=0)
@@ -870,3 +872,12 @@ class LifeHD():
                     'label_counts': {label: labels.count(label) for label in unique_labels}
                 }
         return stats
+
+    def gen_label(self, label):
+        label = self.pool(label)
+        return torch.argmax(label, dim=1).flatten()
+
+    def gen_store_labels(self, labels_in_cluster):
+        from collections import Counter
+        label_counts = Counter(labels_in_cluster)
+        return dict(label_counts)

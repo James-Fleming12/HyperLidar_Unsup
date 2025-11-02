@@ -10,3 +10,6 @@ possible configurations for high-level layer:
 2. Pooling then Linear (tradeoff of computation and interpretability?)
 
 Model saved in extractor_model.pth with loss of 0.7588
+
+Other:
+placing only most frequent class into each cluster at the very start (during LifeHD warmup)

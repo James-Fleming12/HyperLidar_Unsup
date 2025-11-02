@@ -126,7 +126,7 @@ class ContrastConv(nn.Module):
         high_class = self.high_classifier(high)
         high_class = F.log_softmax(high_class, dim=1)
 
-        high_label = self.pool(label)
+        high_label = self.gen_label(label)
 
         high_sums = high_label.sum(dim=1, keepdim=True)
         high_sums = torch.where(high_sums == 0, torch.ones_like(high_sums), high_sums) # avoid division by 0
