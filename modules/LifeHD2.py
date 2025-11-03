@@ -17,7 +17,7 @@ from tqdm import tqdm
 from exp_extract import HistogramPool
 from modules.LifeHD import Model
 from utils.eval_utils import eval_acc, eval_nmi, eval_ri
-from utils.plot_utils import plot_confusion_matrix, plot_tsne
+from utils.plot_utils import plot_confusion_matrix, plot_novelty_detection, plot_tsne
 
 novelty_detect = []
 class_shift = []
@@ -214,10 +214,6 @@ class LifeHD():
 
         with torch.no_grad():
             for idx, (image, _, label, _, _, _, _, _, _, _, _, _, _, _, _) in enumerate(tqdm(self.train_loader, desc="Training")):
-                image = image.to(self.device)
-                label = self.gen_label(label)
-                label = label.to(self.device)
-                outputs, sample_hv = self.model(image, self.mask)
 
                 # validation
                 if idx > self.opt.warmup_batches and idx % val_freq == 0:
@@ -243,6 +239,12 @@ class LifeHD():
                     self.mask[sort_idx[:self.opt.mask_dim]] = 1
                     self.cur_mask_dim = self.opt.mask_dim
 
+                image = image.to(self.device)
+                label = self.gen_label(label)
+                label = label.to(self.device)
+
+                outputs, sample_hv = self.model(image, self.mask)
+
                 if not self.warmup_done:
                     self.warmup(idx, sample_hv, label)
                 else:
@@ -260,7 +262,23 @@ class LifeHD():
                                                       pred_class[~novel_detect_mask], 
                                                       simil_to_class[~novel_detect_mask], 
                                                       idx, label[~novel_detect_mask])
+                    
+                    if novel_detect_mask.sum() > 0:
+                        novelty_detect.append(idx)
+                        self.add_sample_hv_to_novel_class(sample_hv[novel_detect_mask], idx, label[novel_detect_mask])
+                        
+                        if self.opt.mask_mode == 'adaptive':
+                            self.mask = torch.ones(self.opt.dim, device=self.device).type(torch.bool)
+                            self.cur_mask_dim = self.opt.dim
+                            self.last_novel = idx
 
+                self.model.classify.weight[:] = F.normalize(self.model.classify_weights)
+
+            if self.opt.merge_mode != 'no_trim':
+                self.trim_clusters()
+
+            print(self.model.classify_sample_cnt)
+            plot_novelty_detection(class_shift, novelty_detect, self.opt.save_folder)
 
     def validate(self, epoch, loader_idx, plot, mode):
         test_samples, test_embeddings = None, None
@@ -350,10 +368,29 @@ class LifeHD():
 
             self.model.last_edit[cs] = batch_idx
 
-    def add_sample_hv_to_novel_class(self, sample_hv, batch_idx):
-        pass
+    def add_sample_hv_to_novel_class(self, sample_hv, batch_idx, label):
+        if self.model.cur_classes < self.model.max_classes:
+            new_cs = self.model.cur_classes
+            self.model.cur_classes += 1
+        else:
+            assert np.min(self.model.last_edit) > 0, 'not all classes are edited!'
+            new_cs = np.argmin(self.model.last_edit).astype('int')
+
+        self.model.classify_weights[new_cs] = sample_hv.sum(dim=0)
+        self.model.classify_sample_cnt[new_cs] = sample_hv.shape[0]
+        self.model.last_edit[new_cs] = batch_idx
+
+        self.add_cluster_label(new_cs, label)
+
+        if sample_hv.shape[0] > 1:  # more than one sample
+            dist_to_cen = F.normalize(sample_hv) @ F.normalize(self.model.classify_weights[new_cs].view(1, -1)).T
+            self.model.dist_mean[new_cs] = torch.mean(dist_to_cen)  # scalar
+            self.model.dist_std[new_cs] = torch.mean(torch.abs(dist_to_cen - self.model.dist_mean[new_cs]))
 
     def add_cluster_label(self, cluster, label):
+        if cluster not in self.model.cluster_labels:
+            self.model.cluster_labels[cluster] = {}
+
         if label in self.model.cluster_labels[cluster]:
             self.model.cluster_labels[cluster][label] += 1
         else:
@@ -369,7 +406,93 @@ class LifeHD():
         return dict(label_counts)
 
     def merge_clusters(self, U, nc, class_hvs, batch_idx):
-        pass
+        K2 = KMeans(nc)
+        K2.fit(U[:, :nc])
+
+        old_classes = self.model.cur_classes
+        old_weights = self.model.classify_weights[:old_classes].detach().clone()
+        old_cnt = self.model.classify_sample_cnt[:old_classes].detach().clone()
+        old_dist_mean = self.model.dist_mean[:old_classes].detach().clone()
+        old_dist_std = self.model.dist_std[:old_classes].detach().clone()
+        old_last_edit = self.model.last_edit[:old_classes].copy()  # numpy array
+        old_clus_labels = {}
+        for cluster_idx in range(old_classes):
+            if cluster_idx in self.model.cluster_labels:
+                old_clus_labels[cluster_idx] = copy.deepcopy(self.model.cluster_labels[cluster_idx])
+
+        self.model.classify.weight.data.fill_(0.0)
+        self.model.classify_weights = nn.Parameter(self.model.classify.weight.detach().clone())
+        self.model.classify_sample_cnt = torch.zeros(self.model.max_classes).to(self.device)
+        self.model.dist_mean = torch.zeros(self.model.max_classes).to(self.device)
+        self.model.dist_std = torch.zeros(self.model.max_classes).to(self.device)
+        self.model.last_edit = - np.ones(self.model.max_classes)
+        self.model.cluster_labels = {}
+
+        sorted_labels = sorted(list(set(K2.labels_)))
+        new_nc = len(sorted_labels)
+        self.model.cur_classes = new_nc
+        new_labels = np.array([sorted_labels.index(K2.labels_[i]) for i in range(len(K2.labels_))])
+
+        print('K2 labels: ', K2.labels_)
+        print('new labels: ', new_labels)
+        print('Starting merging: {}->{}'.format(len(K2.labels_), new_nc))
+        self.merge += len(K2.labels_) - new_nc
+        for ix in range(new_nc):
+            old_cluster_mask = (new_labels == ix)
+            self.model.classify_weights[ix] = old_weights[old_cluster_mask].sum(dim=0)  # size 1xD
+            self.model.classify_sample_cnt[ix] = old_cnt[old_cluster_mask].sum()
+            print('{} old clusters {}\n\twith cnt {}'.format(
+                old_cluster_mask.sum(),
+                np.arange(len(K2.labels_))[old_cluster_mask],
+                old_cnt[old_cluster_mask]
+            ))
+
+            self.model.dist_mean[ix] = torch.max(old_dist_mean[old_cluster_mask])
+            self.model.dist_std[ix] = torch.max(old_dist_std[old_cluster_mask])
+            self.model.last_edit[ix] = np.max(old_last_edit[old_cluster_mask])
+
+            old_indices = np.where(old_cluster_mask)[0]
+            merged_dict = {}
+            for old_idx in old_indices:
+                for label, count in old_clus_labels[old_idx].items():
+                    merged_dict[label] = merged_dict.get(label, 0) + count
+            self.model.cluster_labels[ix] = merged_dict
+
+        self.model.classify.weight[:] = F.normalize(self.model.classify_weights)
 
     def trim_clusters(self):
-        pass
+        mask_to_keep = self.model.classify_sample_cnt.cpu().numpy() > self.opt.hit_th
+        print(mask_to_keep)
+        new_classes = mask_to_keep.sum()
+
+        print('\n\nTrim!!! {}->{}'.format(self.model.cur_classes, new_classes))
+        self.trim += self.model.cur_classes - new_classes
+
+        old_weights = self.model.classify_weights.detach().clone()
+        old_cnt = self.model.classify_sample_cnt.detach().clone()
+        old_dist_mean = self.model.dist_mean.detach().clone()
+        old_dist_std = self.model.dist_std.detach().clone()
+        old_last_edit = self.model.last_edit.copy()  # This is numpy array, copy is fine
+        old_clus_labels = copy.deepcopy(self.model.cluster_labels)
+
+        self.model.cur_classes = new_classes
+
+        self.model.classify.weight.data.fill_(0.0)
+        self.model.classify_weights = nn.Parameter(self.model.classify.weight.detach().clone())
+        self.model.classify_sample_cnt = torch.zeros(self.model.max_classes).to(self.device)
+        self.model.dist_mean = torch.zeros(self.model.max_classes).to(self.device)
+        self.model.dist_std = torch.zeros(self.model.max_classes).to(self.device)
+        self.model.last_edit = - np.ones(self.model.max_classes)
+        self.model.cluster_labels = {}
+
+        self.model.classify_weights[:new_classes] = old_weights[mask_to_keep]
+        self.model.classify_sample_cnt[:new_classes] = old_cnt[mask_to_keep]
+        self.model.dist_mean[:new_classes] = old_dist_mean[mask_to_keep]
+        self.model.dist_std[:new_classes] = old_dist_std[mask_to_keep]
+        self.model.last_edit[:new_classes] = old_last_edit[mask_to_keep]
+
+        kept_indices = np.where(mask_to_keep)[0]
+        for new_idx, old_idx in enumerate(kept_indices):
+            self.model.cluster_labels[new_idx] = old_clus_labels[old_idx]
+
+        self.model.classify.weight[:] = F.normalize(self.model.classify_weights)

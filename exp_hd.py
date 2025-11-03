@@ -61,9 +61,11 @@ class DualHD:
             rotation = 0.0,
             mask_dim = int(self.hd_dim * 0.6),
             beta = 3, # ???
+            alpha = 0.3, # exponential smoothing factor for ...
             merge_mode = 'trim',# as long as its not no_trim?
             k_merge_min = 3,
-            save_folder = "life_hd_plots"
+            save_folder = "life_hd_plots",
+            hit_th = 10,
         )
 
         self.low_hd = Model_Dyn(ARCH, MODEL_DIR, "rp", self.hd_dim, 1, self.randomness, self.num_classes, self.device)
