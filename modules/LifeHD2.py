@@ -16,6 +16,8 @@ from tqdm import tqdm
 
 from exp_extract import HistogramPool
 from modules.LifeHD import Model
+from utils.eval_utils import eval_acc, eval_nmi, eval_ri
+from utils.plot_utils import plot_confusion_matrix, plot_tsne
 
 novelty_detect = []
 class_shift = []
@@ -230,9 +232,9 @@ class LifeHD():
                         if self.opt.k_merge_min < nc < self.model.max_classes:
                             self.merge_clusters(U, nc, class_hvs, idx)
 
-                    acc, purity = self.valdiate(epoch, idx+1, False, 'after')
-                    print('Validate stream: [{}][{}/{}]\tacc: {} purity: {}'.format(epoch, idx + 1, len(self.train_loader), acc, purity))
-                    sys.stdout.flush()
+                    # acc, purity = self.validate(epoch, idx+1, False, 'after')
+                    # print('Validate stream: [{}][{}/{}]\tacc: {} purity: {}'.format(epoch, idx + 1, len(self.train_loader), acc, purity))
+                    # sys.stdout.flush()
 
                 if self.opt.mask_mode == 'adaptive' and idx - self.last_novel > 3:
                     weight_sum = torch.abs(self.model.classify_weights[:self.model.cur_classes].sum(dim=0))
@@ -244,17 +246,118 @@ class LifeHD():
                 if not self.warmup_done:
                     self.warmup(idx, sample_hv, label)
                 else:
-                    # normal session after warmup ...
-                    pass
+                    # normal session after warmup
+                    simil_to_class, pred_class = torch.max(outputs, dim=-1)
+                    pred_class_samples = self.model.classify_sample_cnt[pred_class]
 
-    def validate(self, epoch, loader_idx, mode):
-        pass
+                    assert pred_class_samples.min() > 0, 'Predicted class {} has zero samples!' # ...
 
-    def add_sample_hv_to_exist_class(self, sample_hv, pred_class, simil_to_class, batch_idx):
-        pass
+                    simil_threshold = self.model.dist_mean[pred_class] - self.opt.beta * self.model.dist_std[pred_class]
+
+                    novel_detect_mask = (simil_to_class < simil_threshold) & (pred_class_samples > 10)
+
+                    self.add_sample_hv_to_exist_class(sample_hv[~novel_detect_mask], 
+                                                      pred_class[~novel_detect_mask], 
+                                                      simil_to_class[~novel_detect_mask], 
+                                                      idx, label[~novel_detect_mask])
+
+
+    def validate(self, epoch, loader_idx, plot, mode):
+        test_samples, test_embeddings = None, None
+        pred_labels, test_labels = [], []
+
+        with torch.no_grad():
+            for idx, (image, _, label, _, _, _, _, _, _, _, _, _, _, _, _) in enumerate(tqdm(self.train_loader, desc="Testing")):
+                image = image.to(self.device)
+                label = self.gen_label(label)
+                label = label.to(self.device)
+                
+                outputs, _ = self.model(image, self.mask)
+                predictions = torch.argmax(outputs, dim=-1)
+
+                pred_labels += predictions.detach().cpu().tolist()
+                test_labels += label.cpu().tolist()
+
+                embeddings = self.model.encode(image).detach().cpu().numpy()
+                test_bsz = image.size(0)
+                if test_embeddings is None:
+                    test_samples = image.squeeze().view((test_bsz, -1)).cpu().numpy()
+                    test_embeddings = embeddings
+                else:
+                    test_samples = np.concatenate((test_samples, image.squeeze().view((test_bsz, -1)).cpu().numpy()),axis=0)
+                    test_embeddings = np.concatenate((test_embeddings, embeddings), axis=0)
+
+                pred_labels = np.array(pred_labels).astype(int)
+                print(np.unique(pred_labels))
+                test_labels = np.array(test_labels).astype(int)
+                acc, purity, cm = eval_acc(test_labels, pred_labels)
+                print('Acc: {}, purity: {}'.format(acc, purity))
+
+                nmi = eval_nmi(test_labels, pred_labels)
+                print('NMI: {}'.format(nmi))
+
+                ri = eval_ri(test_labels, pred_labels)
+                print('RI: {}'.format(ri))
+
+                with open(os.path.join(self.opt.save_folder, 'result.txt'), 'a+') as f:
+                    f.write('{epoch},{idx},{acc},{purity},{nmi},{ri},{nc},{trim},{merge}\n'.format(
+                        epoch=epoch, idx=loader_idx, acc=acc, purity=purity,
+                        nmi=nmi, ri=ri, nc=self.model.cur_classes, 
+                        trim=self.trim, merge=self.merge
+                    ))
+
+                if plot:
+                    # plot the tSNE of raw samples with predicted labels
+                    plot_tsne(test_embeddings, np.array(pred_labels), np.array(test_labels),
+                            title='embeddings {} {} {} {}'.format(self.opt.method, self.opt.dataset, acc, mode),
+                            fig_name=os.path.join(self.opt.save_folder,
+                                                    '{}_emb_{}_{}_{}.png'.format(
+                                                        loader_idx, self.opt.method, self.opt.dataset, mode)))
+                    
+                    np.save(os.path.join(self.opt.save_folder, 'confusion_mat'), cm)
+                    # plot confusion matrix
+                    plot_confusion_matrix(cm, self.opt.dataset, self.opt.save_folder)
+        
+            return acc, purity
+
+    def add_sample_hv_to_exist_class(self, sample_hv, pred_class, simil_to_class, batch_idx, label):
+        pred_class_set = np.unique(pred_class.cpu().numpy())
+
+        for cs in pred_class_set:
+            mask = (pred_class == cs)
+            old_sample_hv = copy.deepcopy(self.model.classify_weights[cs].view(1, -1))
+            old_sample_cnt = self.model.classify_sample_cnt[cs].item()
+            self.model.classify_weights[cs, self.mask] += sample_hv[mask][:, self.mask].sum(dim=0)
+            self.model.classify_sample_cnt[cs] += mask.sum()
+            
+            self.add_cluster_label(cs, label)
+
+            if old_sample_cnt > 1:
+                self.model.dist_std[cs] = \
+                    self.opt.alpha * torch.mean(torch.abs(simil_to_class[mask] - self.model.dist_mean[cs])) + \
+                    (1 - self.opt.alpha) * self.model.dist_std[cs]
+                self.model.dist_mean[cs] = \
+                    self.opt.alpha * simil_to_class[mask].mean() + \
+                    (1 - self.opt.alpha) * self.model.dist_mean[cs]
+
+            else:
+                dist_to_cen = \
+                    F.normalize(torch.cat((old_sample_hv[:, self.mask], sample_hv[mask][:, self.mask]), dim=0)) @ \
+                    F.normalize(self.model.classify_weights[cs, self.mask].view(1, -1)).T
+                self.model.dist_mean[cs] = torch.mean(dist_to_cen)  # scalar
+                self.model.dist_std[cs] = torch.mean(
+                    torch.abs(dist_to_cen - self.model.dist_mean[cs]))  # scalar
+
+            self.model.last_edit[cs] = batch_idx
 
     def add_sample_hv_to_novel_class(self, sample_hv, batch_idx):
         pass
+
+    def add_cluster_label(self, cluster, label):
+        if label in self.model.cluster_labels[cluster]:
+            self.model.cluster_labels[cluster][label] += 1
+        else:
+            self.model.cluster_labels[cluster][label] = 1
 
     def gen_label(self, label):
         label = self.pool(label)

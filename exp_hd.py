@@ -18,7 +18,7 @@ NUM_CLASSES = 28
 MODEL_DIR = "extractor_model.pth"
 
 class DualHD:
-    def __init__(self, ARCH, DATA, parser: Parser, device="cuda", num_classes=NUM_CLASSES):
+    def __init__(self, ARCH, DATA, parser: Parser, life_parser: Parser, device="cuda", num_classes=NUM_CLASSES):
         super().__init__()
         self.num_classes = num_classes
         self.device = device
@@ -35,6 +35,9 @@ class DualHD:
 
         self.train_data = parser.get_train_set()
         self.val_data = parser.get_valid_set()
+
+        self.life_train = life_parser.get_train_set()
+        self.life_val = life_parser.get_valid_set()
 
         self.epochs = 50 # temp for testing
         self.hd_dim = 1000
@@ -58,13 +61,16 @@ class DualHD:
             rotation = 0.0,
             mask_dim = int(self.hd_dim * 0.6),
             beta = 3, # ???
+            merge_mode = 'trim',# as long as its not no_trim?
+            k_merge_min = 3,
+            save_folder = "life_hd_plots"
         )
 
         self.low_hd = Model_Dyn(ARCH, MODEL_DIR, "rp", self.hd_dim, 1, self.randomness, self.num_classes, self.device)
         self.low_hd_trainer = ExpHD_Dyn(ARCH, DATA, self.low_hd, num_classes)
 
         self.high_hd = LifeHDModel(opt_model, MODEL_DIR, self.num_classes, self.device)
-        self.high_hd_trainer = LifeHD(opt_train, self.train_data, self.val_data, self.num_classes, self.high_hd, self.device)
+        self.high_hd_trainer = LifeHD(opt_train, self.life_train, self.life_val, self.num_classes, self.high_hd, self.device)
 
     def forward(self, x):
         pass
@@ -123,8 +129,22 @@ def main():
             workers=ARCH["train"]["workers"],
             gt=True,
             shuffle_train=False)
+    life_parser = Parser(root = os.getcwd() + "/kitti_data/",
+            train_sequences=[1,2,3,4,5,6,7,9,10],
+            valid_sequences=[8],
+            test_sequences=[11,12,13,14,15,16,17,18,19,20,21],
+            labels=DATA["labels"],
+            color_map=DATA["color_map"],
+            learning_map=DATA["learning_map"],
+            learning_map_inv=DATA["learning_map_inv"],
+            sensor=ARCH["dataset"]["sensor"],
+            max_points=ARCH["dataset"]["max_points"],
+            batch_size = 1, # ...
+            workers=ARCH["train"]["workers"],
+            gt=True,
+            shuffle_train=False)
 
-    net = DualHD(ARCH, DATA, parser)
+    net = DualHD(ARCH, DATA, parser, life_parser)
     net.train()
 
 if __name__=="__main__":
