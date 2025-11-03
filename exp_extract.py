@@ -1,3 +1,4 @@
+import json
 import yaml
 import os
 
@@ -7,7 +8,6 @@ import torch.nn.functional as F
 
 from modules.network.ResNet import ResNet_34
 from dataset.kitti.parser import Parser
-from modules.Basic_HD import ExpHD
 
 NUM_CLASSES = 28 # testing on SemanticKITTI
 
@@ -24,7 +24,7 @@ class HistogramPool(nn.Module):
         
         if channels > 1:
             x = x[:, 0:1, :, :]
-            
+
         h_out = height // self.patch_size
         w_out = width // self.patch_size
         num_patches = h_out * w_out
@@ -53,7 +53,8 @@ class ContrastConv(nn.Module):
     def __init__(self, patch_size=4, num_classes=NUM_CLASSES):
         super().__init__()
         self.net = ResNet_34(num_classes, False)
-        self.patch_size = patch_size # 16 works since input is image of 512 * 64
+        self.patch_size = patch_size # 4 works since input is image of 512 * 64
+        # assert 
         self.conv = nn.Conv2d(128, 128, self.patch_size, stride=self.patch_size, padding=0)
 
         self.low_classifier = nn.Conv2d(128, num_classes, kernel_size=1)
@@ -147,6 +148,37 @@ class ContrastConv(nn.Module):
         total_loss = low_loss + self.scale * high_loss
 
         return total_loss
+    
+    def decomp_loss(self, low, high, label, current_epoch):
+        low_class = self.low_classifier(low)
+        low_class = F.log_softmax(low_class, dim=1)
+        low_loss = self.criterion(low_class, label.long())
+
+        if current_epoch < self.pre_epochs:
+            return low_loss, None, None
+
+        high_class = self.high_classifier(high)
+        high_class = F.log_softmax(high_class, dim=1)
+
+        high_label = self.gen_label(label)
+
+        high_sums = high_label.sum(dim=1, keepdim=True)
+        high_sums = torch.where(high_sums == 0, torch.ones_like(high_sums), high_sums) # avoid division by 0
+        # high_label = high_label / high_sums # normalize so loss terms are not imbalanced
+
+        # low_loss = -label_onehot * low_class
+        # low_loss = low_loss.sum(dim=1)
+        # low_loss = (low_loss * mask.float()).mean() # only average over valid pixels
+        valid_high_patches = (high_label.sum(dim=1) > 0).float()
+        num_valid_patches = valid_high_patches.sum()
+        
+        if num_valid_patches > 0:
+            high_loss = (-high_label * high_class).sum(dim=1)
+            high_loss = (high_loss * valid_high_patches).sum() / num_valid_patches
+        else:
+            high_loss = torch.tensor(0.0).to(high_class.device)
+
+        return low_loss, self.scale, high_loss
 
 def main():
     try: # open arch config file
@@ -174,16 +206,8 @@ def main():
             gt=True,
             shuffle_train=False)
 
-    # test_batch = parser.get_train_batch() # first are inputs, third are labels?
-    # test_in = test_batch[0][0] 
-    # test_in = test_in[None, ...] # 1, 5, 64, 512
-    # test_la = test_batch[1][0]
-    # test_la = test_la[None, ...] # 1, 64, 512
-    net = ContrastConv()
+    net = ContrastConv(patch_size=16) # could be 4, 8, 16, 32, 64
 
-    # low, high = net(test_in) # low: 1, 128, 64, 512   high: 1, 128, 4, 32
-
-    # net.loss(low, high, test_la)
     train_dataset = parser.get_train_set()
     val_dataset = parser.get_valid_set()
     # optimizer = torch.optim.Adam(net.parameters(), lr=ARCH["train"]["decay"]["lr"])
@@ -196,22 +220,46 @@ def main():
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5)
 
+    training_log = {
+        'epochs': [],
+        'train_total_loss': [],
+        'train_low_loss': [],
+        'train_high_loss': [],
+        'val_total_loss': [],
+        'val_low_loss': [],
+        'val_high_loss': [],
+        'learning_rates': []
+    }
+    os.makedirs('logs', exist_ok=True)
+
+
     for epoch in range(ARCH["train"]["max_epochs"]):
         net.train()
         train_loss = 0.0
+        train_low_loss = 0.0
+        train_high_loss = 0.0
         num_batches = 0
-        
+            
         for batch_idx, curr in enumerate(train_dataset):
             curr_in = curr[0].to(device)
             curr_label =  curr[2].to(device)
             
             optimizer.zero_grad()
             low, high = net(curr_in)
-            loss = net.loss(low, high, curr_label, epoch)
+            # loss = net.loss(low, high, curr_label, epoch)
+            low_loss, scale, high_loss = net.decomp_loss(low, high, curr_label, epoch)
+
+            if high_loss is None:
+                loss = low_loss
+            else:
+                loss = low_loss + scale * high_loss
+                train_high_loss += high_loss.item() if high_loss is not None else 0.0
+
             loss.backward()
 
             optimizer.step()
-            
+
+            train_low_loss += low_loss.item()
             train_loss += loss.item()
             num_batches += 1
 
@@ -222,30 +270,64 @@ def main():
             #     net.check_gradients()
         
         avg_train_loss = train_loss / num_batches
+        avg_train_low = train_low_loss / num_batches
+        avg_train_high = train_high_loss / num_batches if epoch >= net.pre_epochs else 0.0
         
         # Validation phase
         net.eval()
         val_loss = 0.0
+        val_low_loss = 0.0
+        val_high_loss = 0.0
         num_val_batches = 0
+
         with torch.no_grad():
             for curr in val_dataset:
                 curr_in = curr[0].to(device)
                 curr_label = curr[2].to(device)
                 low, high = net(curr_in)
-                loss = net.loss(low, high, curr_label, epoch)
+                # loss = net.loss(low, high, curr_label, epoch)
+                low_loss, scale, high_loss = net.decomp_loss(low, high, curr_label, epoch)
+
+                if high_loss is None:
+                    loss = low_loss
+                else:
+                    loss = low_loss + scale * high_loss
+                    val_high_loss += high_loss.item() if high_loss is not None else 0.0
+
                 val_loss += loss.item()
                 num_val_batches += 1
-        
+
+                val_low_loss += low_loss.item()
+
         avg_val_loss = val_loss / num_val_batches
         scheduler.step(avg_val_loss)
-        
+
+        avg_val_low = val_low_loss / num_val_batches
+        avg_val_high = val_high_loss / num_val_batches if epoch >= net.pre_epochs else 0.0
+
+        training_log['epochs'].append(epoch)
+        training_log['train_total_loss'].append(avg_train_loss)
+        training_log['train_low_loss'].append(avg_train_low)
+        training_log['train_high_loss'].append(avg_train_high)
+        training_log['val_total_loss'].append(avg_val_loss)
+        training_log['val_low_loss'].append(avg_val_low)
+        training_log['val_high_loss'].append(avg_val_high)
+        training_log['learning_rates'].append(optimizer.param_groups[0]["lr"])
+            
         print(f"Epoch: {epoch} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | LR: {optimizer.param_groups[0]["lr"]:.6f}")
 
         if avg_val_loss < best_val_loss:
             if epoch > net.pre_epochs:
                 best_val_loss = avg_val_loss
-            torch.save(net.state_dict(), 'extractor_model.pth')
+            torch.save(net.state_dict(), f'extractor_model_{best_val_loss:.4f}.pth')
             print(f"Model saved in extractor_model.pth with loss of {best_val_loss:.4f}")
+
+        if epoch % 5 == 0:
+            with open('logs/training_log.json', 'w') as f:
+                json.dump(training_log, f, indent=2)
+
+    with open('logs/training_log.json', 'w') as f:
+        json.dump(training_log, f, indent=2)
 
 if __name__ == "__main__":
     main()
