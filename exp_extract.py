@@ -179,6 +179,12 @@ class ContrastConv(nn.Module):
             high_loss = torch.tensor(0.0).to(high_class.device)
 
         return low_loss, self.scale, high_loss
+    
+    def gen_label(self, label):
+        label = self.pool(label)
+        sums = label.sum(dim=1, keepdim=True)
+        densities = label / (sums + 1e-8)
+        return densities
 
 def main():
     try: # open arch config file
@@ -186,7 +192,7 @@ def main():
     except Exception as e:
         print(f"Error opening arch yaml file. {e}")
         quit()
-    try:    # open data config file
+    try: # open data config file
         DATA = yaml.safe_load(open("config/labels/semantic-kitti.yaml", 'r'))
     except Exception as e:
         print(f"Error opening data yaml file. {e}")

@@ -1,3 +1,5 @@
 *.label
 *.bin
 *.pth
+life_hd_plots
+logs
