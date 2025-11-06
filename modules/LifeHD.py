@@ -20,10 +20,10 @@ from utils.plot_utils import plot_tsne, plot_tsne_graph, \
     plot_novelty_detection, plot_confusion_matrix
 
 from torchhd import embeddings, functional
-import exp_extract
+import uns_extract
 import torch.nn as nn
 
-from exp_extract import HistogramPool
+from uns_extract import HistogramPool
 
 novelty_detect = []
 class_shift = []
@@ -168,7 +168,7 @@ class Model(nn.Module):
         self.input_dim = 128
 
         with torch.no_grad():
-            self.net = exp_extract.ContrastConv(num_classes=num_classes)
+            self.net = uns_extract.ContrastConv(num_classes=num_classes)
 
         checkpoint = torch.load(modelfile, map_location=device)
         if 'model_state_dict' in checkpoint:

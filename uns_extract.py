@@ -64,7 +64,7 @@ class ContrastConv(nn.Module):
 
         self.criterion = nn.NLLLoss(ignore_index=0)
 
-        self.scale = 0.05
+        self.scale = 0.08
         self.pre_epochs = 10
 
     def forward(self, x):

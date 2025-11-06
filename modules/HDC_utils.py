@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import exp_extract
+import uns_extract
 
 class Model(nn.Module):
     def __init__(self, ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device):
@@ -273,7 +273,7 @@ class Model_Dyn(nn.Module):
 
         with torch.no_grad():
             torch.nn.Module.dump_patches = True
-            self.net = exp_extract.ContrastConv(num_classes=num_classes)
+            self.net = uns_extract.ContrastConv(num_classes=num_classes)
 
         checkpoint = torch.load(model_file, map_location=device)
         if 'model_state_dict' in checkpoint:

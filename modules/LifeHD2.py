@@ -14,7 +14,7 @@ from sklearn.neighbors import kneighbors_graph
 from scipy.sparse import csgraph
 from tqdm import tqdm
 
-from exp_extract import HistogramPool
+from uns_extract import HistogramPool
 from modules.LifeHD import Model
 from utils.eval_utils import eval_acc, eval_nmi, eval_ri
 from utils.plot_utils import plot_confusion_matrix, plot_novelty_detection, plot_tsne

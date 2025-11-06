@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from exp_extract import ContrastConv
+from uns_extract import ContrastConv
 from dataset.kitti.parser import Parser
 from modules.Basic_HD import ExpHD_Dyn
 from modules.LifeHD import Model as LifeHDModel
