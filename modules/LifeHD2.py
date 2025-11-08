@@ -163,6 +163,9 @@ class LifeHD():
         val_freq = np.floor(len(self.train_loader) / VAL_CNT).astype('int')
         batchs_per_class = np.floor(len(self.train_loader) / self.num_classes).astype('int')
 
+        if epoch > 1:
+            self.reset_cluster_labels() # stops counts from getting too out of control for now
+
         with torch.no_grad():
             for idx, (image, _, label, _, _, _, _, _, _, _, _, _, _, _, _) in enumerate(tqdm(self.train_loader, desc="Training")):
 
@@ -225,6 +228,7 @@ class LifeHD():
                 self.trim_clusters()
 
             print(self.model.classify_sample_cnt)
+            self.log_cluster_info(epoch, log_interval=5)
             plot_novelty_detection(class_shift, novelty_detect, self.opt.save_folder)
 
     def validate(self, epoch, loader_idx, plot, mode):
@@ -295,7 +299,8 @@ class LifeHD():
             self.model.classify_weights[cs, self.mask] += sample_hv[mask][:, self.mask].sum(dim=0)
             self.model.classify_sample_cnt[cs] += mask.sum()
             
-            self.add_cluster_label(cs, label)
+            for i in label:
+                self.add_cluster_label(cs, i.item())
 
             if old_sample_cnt > 1:
                 self.model.dist_std[cs] = \
@@ -327,7 +332,8 @@ class LifeHD():
         self.model.classify_sample_cnt[new_cs] = sample_hv.shape[0]
         self.model.last_edit[new_cs] = batch_idx
 
-        self.add_cluster_label(new_cs, label)
+        for i in label:
+            self.add_cluster_label(new_cs, i.item())
 
         if sample_hv.shape[0] > 1:  # more than one sample
             dist_to_cen = F.normalize(sample_hv) @ F.normalize(self.model.classify_weights[new_cs].view(1, -1)).T
@@ -351,6 +357,33 @@ class LifeHD():
         from collections import Counter
         label_counts = Counter(labels_in_cluster)
         return dict(label_counts)
+    
+    def log_cluster_info(self, batch_idx, log_interval=10):
+        """Log current cluster information to CSV file"""
+        if not self.warmup_done:
+            return
+            
+        if batch_idx % log_interval == 0:
+            cluster_sizes = self.model.classify_sample_cnt[:self.model.cur_classes].cpu().numpy()
+            
+            # Write to CSV file
+            with open(os.path.join(self.opt.save_folder, 'cluster_tracking.csv'), 'a') as f:
+                cluster_details = []
+                for cluster_id in range(self.model.cur_classes):
+                    if cluster_id in self.model.cluster_labels:
+                        label_dict = self.model.cluster_labels[cluster_id]
+                        # Convert to string format: "cluster_id:label1:count1,label2:count2;..."
+                        label_str = ",".join([f"{label}:{count}" for label, count in label_dict.items()])
+                        cluster_details.append(f"{cluster_id}:{label_str}")
+                
+                cluster_details_str = ";".join(cluster_details)
+                print(self.model.cluster_labels[0])
+                if batch_idx == 0:  # Write header only once
+                    f.write("batch_idx,num_clusters,total_samples,min_cluster_size,max_cluster_size,mean_cluster_size,timestamp\n")
+                
+                f.write(f"{batch_idx},{self.model.cur_classes},{cluster_sizes.sum()},")
+                f.write(f"{cluster_sizes.min()},{cluster_sizes.max()},{cluster_sizes.mean():.2f},{time.time()}")
+                f.write(f'"{cluster_details_str}"\n')
 
     def merge_clusters(self, U, nc, class_hvs, batch_idx):
         K2 = KMeans(nc)
@@ -443,3 +476,7 @@ class LifeHD():
             self.model.cluster_labels[new_idx] = old_clus_labels[old_idx]
 
         self.model.classify.weight[:] = F.normalize(self.model.classify_weights)
+
+    def reset_cluster_labels(self):
+        for cluster_id in self.model.cluster_labels:
+            self.model.cluster_labels[cluster_id] = {}

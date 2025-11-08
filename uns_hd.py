@@ -81,7 +81,7 @@ class DualHD:
         pass
 
     def train(self):
-        self.train_low()
+        # self.train_low()
         self.train_high()
 
     def train_low(self):
@@ -106,6 +106,7 @@ class DualHD:
 
     def train_high(self):
         self.high_hd_trainer.start()
+        torch.save(self.high_hd.state_dict(), f"end_high_hdc.pth")
 
 def main():
     torch.cuda.empty_cache()
