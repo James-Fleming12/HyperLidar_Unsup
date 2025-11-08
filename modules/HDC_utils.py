@@ -255,7 +255,7 @@ def set_model(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, d
     return Model(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device)
 
 class Model_Dyn(nn.Module):
-    def __init__(self, ARCH, model_file, hd_encoder, hd_dim, num_levels, randomness, num_classes, device):
+    def __init__(self, ARCH, model_file, hd_encoder, hd_dim, num_levels, randomness, num_classes, device, patch_size=4):
         super(Model_Dyn, self).__init__()
 
         self.device = device
@@ -273,7 +273,7 @@ class Model_Dyn(nn.Module):
 
         with torch.no_grad():
             torch.nn.Module.dump_patches = True
-            self.net = uns_extract.ContrastConv(num_classes=num_classes)
+            self.net = uns_extract.ContrastConv(num_classes=num_classes, patch_size=patch_size)
 
         checkpoint = torch.load(model_file, map_location=device)
         if 'model_state_dict' in checkpoint:

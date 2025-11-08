@@ -213,6 +213,7 @@ def main():
             shuffle_train=False)
 
     net = ContrastConv(patch_size=16) # could be 4, 8, 16, 32, 64
+    print(net.conv.weight.size())
 
     train_dataset = parser.get_train_set()
     val_dataset = parser.get_valid_set()

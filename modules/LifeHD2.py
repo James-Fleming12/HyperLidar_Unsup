@@ -23,56 +23,7 @@ novelty_detect = []
 class_shift = []
 VAL_CNT = 10
 
-EIGEN_MAX = 2000 # just to make testing a little faster
-
-def get_nc_laplacian(class_hvs, batch_idx, opt):
-    """
-    Obtain the number of clusters by searching for plateaus
-    in the sorted eigenvalues
-
-    Args:
-        class_hvs: extracted class hypervectors by calling model.extract_class_hv()
-        batch_idx: the batch index in the training stream for logging
-        opt: arguments
-
-    Returns:
-        nc: the number of clusters as the start of the plateau
-        L: the k neighbors graph of the input class_hvs
-        U: the eigenvectors of L
-    """
-    G = kneighbors_graph(class_hvs, 3, include_self=True).toarray()
-    L = csgraph.laplacian(G)
-    # print(L)
-
-    (S, U) = np.linalg.eig(L)
-    S, U = np.real(S), np.real(U)
-    ixs = np.argsort(S)  # Sort, ascending
-    S, U = S[ixs], U[:, ixs]
-    U = U[:, S > 0]
-    S = S[S > 0]
-    S = S / S.max()
-
-    if batch_idx == opt.warmup_batches or batch_idx % 50 == 0:
-        # Plot sorted eigenvalues
-        fig = plt.figure()
-        plt.plot(np.arange(S.size), S)
-        plt.title('Idx: {}'.format(
-            batch_idx
-        ))
-        plt.savefig(os.path.join(opt.save_folder, 'eigenvalue_{}.png'.format(batch_idx)))
-        plt.close(fig)
-
-        fig = plt.figure()
-        plt.plot(np.arange(U.shape[0]), np.sort(U[:, 1]))
-        plt.title('Idx: {}'.format(
-            batch_idx
-        ))
-        plt.savefig(os.path.join(opt.save_folder, 'fiedlervector_{}.png'.format(batch_idx)))
-        plt.close(fig)
-
-    return -1, L, U  # Haven't figure out how to get nc
-
-
+EIGEN_MAX = 3000 # just to make testing a little faster
 
 def get_nc(class_hvs, pair_simil, thres, batch_idx, opt, warmup_done):
     """
@@ -117,7 +68,7 @@ def get_nc(class_hvs, pair_simil, thres, batch_idx, opt, warmup_done):
     return nc, L, U
 
 class LifeHD():
-    def __init__(self, opt, train_loader, val_loader, num_classes, model: Model, device):
+    def __init__(self, opt, train_loader, val_loader, num_classes, model: Model, device, patch_size=4):
         self.opt = opt
         self.device = device
 
@@ -136,7 +87,7 @@ class LifeHD():
         self.trim = 0 # trim and merge stats
         self.merge = 0
 
-        self.patch_size = 4
+        self.patch_size = patch_size
         self.pool = HistogramPool(self.patch_size, self.num_classes)
 
     def start(self):
@@ -227,10 +178,6 @@ class LifeHD():
 
                         if self.opt.k_merge_min < nc < self.model.max_classes:
                             self.merge_clusters(U, nc, class_hvs, idx)
-
-                    # acc, purity = self.validate(epoch, idx+1, False, 'after')
-                    # print('Validate stream: [{}][{}/{}]\tacc: {} purity: {}'.format(epoch, idx + 1, len(self.train_loader), acc, purity))
-                    # sys.stdout.flush()
 
                 if self.opt.mask_mode == 'adaptive' and idx - self.last_novel > 3:
                     weight_sum = torch.abs(self.model.classify_weights[:self.model.cur_classes].sum(dim=0))
@@ -324,18 +271,18 @@ class LifeHD():
                         trim=self.trim, merge=self.merge
                     ))
 
-                if plot:
-                    # plot the tSNE of raw samples with predicted labels
-                    plot_tsne(test_embeddings, np.array(pred_labels), np.array(test_labels),
-                            title='embeddings {} {} {} {}'.format(self.opt.method, self.opt.dataset, acc, mode),
-                            fig_name=os.path.join(self.opt.save_folder,
-                                                    '{}_emb_{}_{}_{}.png'.format(
-                                                        loader_idx, self.opt.method, self.opt.dataset, mode)))
+                # if plot:
+                #     # plot the tSNE of raw samples with predicted labels
+                #     plot_tsne(test_embeddings, np.array(pred_labels), np.array(test_labels),
+                #             title='embeddings {} {} {} {}'.format(self.opt.method, self.opt.dataset, acc, mode),
+                #             fig_name=os.path.join(self.opt.save_folder,
+                #                                     '{}_emb_{}_{}_{}.png'.format(
+                #                                         loader_idx, self.opt.method, self.opt.dataset, mode)))
                     
-                    np.save(os.path.join(self.opt.save_folder, 'confusion_mat'), cm)
-                    # plot confusion matrix
-                    plot_confusion_matrix(cm, self.opt.dataset, self.opt.save_folder)
-        
+                #     np.save(os.path.join(self.opt.save_folder, 'confusion_mat'), cm)
+                #     # plot confusion matrix
+                #     plot_confusion_matrix(cm, self.opt.dataset, self.opt.save_folder)
+
             return acc, purity
 
     def add_sample_hv_to_exist_class(self, sample_hv, pred_class, simil_to_class, batch_idx, label):

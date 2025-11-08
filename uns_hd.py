@@ -15,14 +15,17 @@ from modules.HDC_utils import Model_Dyn
 from modules.ioueval import iouEval
 
 NUM_CLASSES = 28
-MODEL_DIR = "extractor_model.pth"
+MODEL_DIR = "extractor_model_0.4515.pth"
+PATCH_SIZE = 16
 
 class DualHD:
     def __init__(self, ARCH, DATA, parser: Parser, life_parser: Parser, device="cuda", num_classes=NUM_CLASSES):
         super().__init__()
         self.num_classes = num_classes
         self.device = device
-        self.feat_extract = ContrastConv(patch_size=4, num_classes=NUM_CLASSES)
+        self.feat_extract = ContrastConv(patch_size=PATCH_SIZE, num_classes=NUM_CLASSES)
+        print(self.feat_extract.patch_size)
+        print(self.feat_extract.conv.weight.size())
 
         checkpoint = torch.load(MODEL_DIR, map_location=device)
         if 'model_state_dict' in checkpoint:
@@ -68,17 +71,17 @@ class DualHD:
             hit_th = 10,
         )
 
-        self.low_hd = Model_Dyn(ARCH, MODEL_DIR, "rp", self.hd_dim, 1, self.randomness, self.num_classes, self.device)
+        self.low_hd = Model_Dyn(ARCH, MODEL_DIR, "rp", self.hd_dim, 1, self.randomness, self.num_classes, self.device, patch_size=PATCH_SIZE)
         self.low_hd_trainer = ExpHD_Dyn(ARCH, DATA, self.low_hd, num_classes)
 
-        self.high_hd = LifeHDModel(opt_model, MODEL_DIR, self.num_classes, self.device)
-        self.high_hd_trainer = LifeHD(opt_train, self.life_train, self.life_val, self.num_classes, self.high_hd, self.device)
+        self.high_hd = LifeHDModel(opt_model, MODEL_DIR, self.num_classes, self.device, patch_size=PATCH_SIZE)
+        self.high_hd_trainer = LifeHD(opt_train, self.life_train, self.life_val, self.num_classes, self.high_hd, self.device, patch_size=PATCH_SIZE)
 
     def forward(self, x):
         pass
 
     def train(self):
-        # self.train_low()
+        self.train_low()
         self.train_high()
 
     def train_low(self):

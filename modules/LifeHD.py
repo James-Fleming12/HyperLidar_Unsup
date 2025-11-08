@@ -149,7 +149,7 @@ model_dim_dict = {
 }
 
 class Model(nn.Module):
-    def __init__(self, opt, modelfile, num_classes, device):
+    def __init__(self, opt, modelfile, num_classes, device, patch_size=4):
         super(Model, self).__init__()
 
         self.device = device
@@ -168,7 +168,7 @@ class Model(nn.Module):
         self.input_dim = 128
 
         with torch.no_grad():
-            self.net = uns_extract.ContrastConv(num_classes=num_classes)
+            self.net = uns_extract.ContrastConv(num_classes=num_classes, patch_size=patch_size)
 
         checkpoint = torch.load(modelfile, map_location=device)
         if 'model_state_dict' in checkpoint:
