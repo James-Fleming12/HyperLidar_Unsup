@@ -75,6 +75,7 @@ class LifeHD():
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.num_classes = num_classes
+        self.batches_per_iter = 20 # ...
 
         self.model = model.to(self.device)
 
@@ -227,9 +228,8 @@ class LifeHD():
             if self.opt.merge_mode != 'no_trim':
                 self.trim_clusters()
 
-            print(self.model.classify_sample_cnt)
-            self.log_cluster_info(epoch, log_interval=5)
-            plot_novelty_detection(class_shift, novelty_detect, self.opt.save_folder)
+            self.log_cluster_info(epoch, log_interval=2)
+            # plot_novelty_detection(class_shift, novelty_detect, self.opt.save_folder)
 
     def validate(self, epoch, loader_idx, plot, mode):
         test_samples, test_embeddings = None, None
@@ -237,6 +237,7 @@ class LifeHD():
 
         with torch.no_grad():
             for idx, (image, _, label, _, _, _, _, _, _, _, _, _, _, _, _) in enumerate(tqdm(self.train_loader, desc="Testing")):
+                
                 image = image.to(self.device)
                 label = self.gen_label(label)
                 label = label.to(self.device)
@@ -247,33 +248,14 @@ class LifeHD():
                 pred_labels += predictions.detach().cpu().tolist()
                 test_labels += label.cpu().tolist()
 
-                embeddings = self.model.encode(image).detach().cpu().numpy()
-                test_bsz = image.size(0)
-                if test_embeddings is None:
-                    test_samples = image.squeeze().view((test_bsz, -1)).cpu().numpy()
-                    test_embeddings = embeddings
-                else:
-                    test_samples = np.concatenate((test_samples, image.squeeze().view((test_bsz, -1)).cpu().numpy()),axis=0)
-                    test_embeddings = np.concatenate((test_embeddings, embeddings), axis=0)
-
-                pred_labels = np.array(pred_labels).astype(int)
-                print(np.unique(pred_labels))
-                test_labels = np.array(test_labels).astype(int)
-                acc, purity, cm = eval_acc(test_labels, pred_labels)
-                print('Acc: {}, purity: {}'.format(acc, purity))
-
-                nmi = eval_nmi(test_labels, pred_labels)
-                print('NMI: {}'.format(nmi))
-
-                ri = eval_ri(test_labels, pred_labels)
-                print('RI: {}'.format(ri))
-
-                with open(os.path.join(self.opt.save_folder, 'result.txt'), 'a+') as f:
-                    f.write('{epoch},{idx},{acc},{purity},{nmi},{ri},{nc},{trim},{merge}\n'.format(
-                        epoch=epoch, idx=loader_idx, acc=acc, purity=purity,
-                        nmi=nmi, ri=ri, nc=self.model.cur_classes, 
-                        trim=self.trim, merge=self.merge
-                    ))
+                # embeddings = self.model.encode(image).detach().cpu().numpy()
+                # test_bsz = image.size(0)
+                # if test_embeddings is None:
+                #     test_samples = image.squeeze().view((test_bsz, -1)).cpu().numpy()
+                #     test_embeddings = embeddings
+                # else:
+                #     test_samples = np.concatenate((test_samples, image.squeeze().view((test_bsz, -1)).cpu().numpy()),axis=0)
+                #     test_embeddings = np.concatenate((test_embeddings, embeddings), axis=0)
 
                 # if plot:
                 #     # plot the tSNE of raw samples with predicted labels
@@ -286,6 +268,23 @@ class LifeHD():
                 #     np.save(os.path.join(self.opt.save_folder, 'confusion_mat'), cm)
                 #     # plot confusion matrix
                 #     plot_confusion_matrix(cm, self.opt.dataset, self.opt.save_folder)
+
+            pred_labels = np.array(pred_labels).astype(int)
+            test_labels = np.array(test_labels).astype(int)
+            acc, purity, cm = eval_acc(test_labels, pred_labels)
+
+            nmi = eval_nmi(test_labels, pred_labels)
+            print('NMI: {}'.format(nmi))
+
+            ri = eval_ri(test_labels, pred_labels)
+            print('RI: {}'.format(ri))
+
+            with open(os.path.join(self.opt.save_folder, 'result.txt'), 'a+') as f:
+                f.write('{epoch},{idx},{acc},{purity},{nmi},{ri},{nc},{trim},{merge}\n'.format(
+                    epoch=epoch, idx=loader_idx, acc=acc, purity=purity,
+                    nmi=nmi, ri=ri, nc=self.model.cur_classes, 
+                    trim=self.trim, merge=self.merge
+                ))
 
             return acc, purity
 
@@ -377,7 +376,6 @@ class LifeHD():
                         cluster_details.append(f"{cluster_id}:{label_str}")
                 
                 cluster_details_str = ";".join(cluster_details)
-                print(self.model.cluster_labels[0])
                 if batch_idx == 0:  # Write header only once
                     f.write("batch_idx,num_clusters,total_samples,min_cluster_size,max_cluster_size,mean_cluster_size,timestamp\n")
                 
@@ -478,5 +476,7 @@ class LifeHD():
         self.model.classify.weight[:] = F.normalize(self.model.classify_weights)
 
     def reset_cluster_labels(self):
+        """Reset all counts to 0 but keep the keys"""
         for cluster_id in self.model.cluster_labels:
-            self.model.cluster_labels[cluster_id] = {}
+            for label_key in list(self.model.cluster_labels[cluster_id].keys()):
+                self.model.cluster_labels[cluster_id][label_key] = 0
