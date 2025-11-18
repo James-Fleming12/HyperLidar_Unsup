@@ -15,7 +15,7 @@ from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import kneighbors_graph
 from scipy.sparse import csgraph
 from tqdm import tqdm
-from utils.eval_utils import eval_acc, eval_nmi, eval_ri
+from utils.eval_utils import eval_acc_multi_label, eval_nmi, eval_ri
 from utils.plot_utils import plot_tsne, plot_tsne_graph, \
     plot_novelty_detection, plot_confusion_matrix
 
@@ -222,8 +222,12 @@ class Model(nn.Module):
 
         # self.classify_weights is the sum of all hypervectors, so its scale
         # accounts the number of samples in this class/cluster
-        self.classify_weights = copy.deepcopy(self.classify.weight).to(self.device)
+        # self.classify_weights = copy.deepcopy(self.classify.weight).to(self.device)
         # print(self.classify_weights.shape)  # size num_class x HD dim
+        self.register_buffer( # works for loading models
+            "classify_weights",
+            copy.deepcopy(self.classify.weight)
+        )
 
     def encode(self, x, mask=None):
         if mask is None:

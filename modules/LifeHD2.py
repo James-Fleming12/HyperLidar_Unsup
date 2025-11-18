@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from uns_extract import HistogramPool
 from modules.LifeHD import Model
-from utils.eval_utils import eval_acc, eval_nmi, eval_ri
+from utils.eval_utils import eval_acc_multi_label, eval_nmi, eval_ri
 from utils.plot_utils import plot_confusion_matrix, plot_novelty_detection, plot_tsne
 
 novelty_detect = []
@@ -67,8 +67,9 @@ def get_nc(class_hvs, pair_simil, thres, batch_idx, opt, warmup_done):
 
     return nc, L, U
 
-class LifeHD():
+class LifeHD(nn.Module):
     def __init__(self, opt, train_loader, val_loader, num_classes, model: Model, device, patch_size=4):
+        super(LifeHD, self).__init__()
         self.opt = opt
         self.device = device
 
@@ -91,6 +92,10 @@ class LifeHD():
         self.patch_size = patch_size
         self.pool = HistogramPool(self.patch_size, self.num_classes)
 
+        self.best_val_acc = -1
+        self.best_model_path = os.path.join(self.opt.save_folder, "best_model_val.pth")
+        self.new_model_path = os.path.join(self.opt.save_folder, f'end_high_hdc.pth')
+
     def start(self):
         for epoch in range(1, self.opt.epochs+1):
             # train for one epoch
@@ -101,8 +106,32 @@ class LifeHD():
             print('epoch {}, total time {:.2f}'.format(epoch, time2 - time1))
 
             # final validation
-            acc = self.validate(epoch, len(self.train_loader), True, 'final')
+            acc, _ = self.validate(epoch, len(self.train_loader), True, 'final')
             print('Stream final acc: {}'.format(acc))
+
+            save_obj = {
+                "state_dict": self.model.state_dict(),
+                "classify_weights": self.model.classify_weights.detach().clone(),
+                "classify_sample_cnt": self.model.classify_sample_cnt.detach().clone(),
+                "dist_mean": self.model.dist_mean.detach().clone(),
+                "dist_std": self.model.dist_std.detach().clone(),
+                "cluster_labels": self.model.cluster_labels,
+                "last_edit": self.model.last_edit,
+                "cur_classes": self.model.cur_classes,
+                "mask": self.mask,
+                "cur_mask_dim": self.cur_mask_dim,
+                "epoch": epoch,
+                "val_acc": acc,
+            }
+            torch.save(save_obj, self.new_model_path)
+
+            print(f"Model saved for epoch {epoch}")
+
+            if acc > self.best_val_acc:
+                self.best_val_acc = acc
+
+                torch.save(save_obj, self.best_model_path)
+                print(f"New best model (acc={acc:.4f})")
 
     def warmup(self, idx, sample_hv, label):
         if idx == 0:
@@ -232,7 +261,6 @@ class LifeHD():
             # plot_novelty_detection(class_shift, novelty_detect, self.opt.save_folder)
 
     def validate(self, epoch, loader_idx, plot, mode):
-        test_samples, test_embeddings = None, None
         pred_labels, test_labels = [], []
 
         with torch.no_grad():
@@ -241,37 +269,19 @@ class LifeHD():
                 image = image.to(self.device)
                 label = self.gen_label(label)
                 label = label.to(self.device)
-                
+
                 outputs, _ = self.model(image, self.mask)
                 predictions = torch.argmax(outputs, dim=-1)
 
                 pred_labels += predictions.detach().cpu().tolist()
                 test_labels += label.cpu().tolist()
 
-                # embeddings = self.model.encode(image).detach().cpu().numpy()
-                # test_bsz = image.size(0)
-                # if test_embeddings is None:
-                #     test_samples = image.squeeze().view((test_bsz, -1)).cpu().numpy()
-                #     test_embeddings = embeddings
-                # else:
-                #     test_samples = np.concatenate((test_samples, image.squeeze().view((test_bsz, -1)).cpu().numpy()),axis=0)
-                #     test_embeddings = np.concatenate((test_embeddings, embeddings), axis=0)
-
-                # if plot:
-                #     # plot the tSNE of raw samples with predicted labels
-                #     plot_tsne(test_embeddings, np.array(pred_labels), np.array(test_labels),
-                #             title='embeddings {} {} {} {}'.format(self.opt.method, self.opt.dataset, acc, mode),
-                #             fig_name=os.path.join(self.opt.save_folder,
-                #                                     '{}_emb_{}_{}_{}.png'.format(
-                #                                         loader_idx, self.opt.method, self.opt.dataset, mode)))
-                    
-                #     np.save(os.path.join(self.opt.save_folder, 'confusion_mat'), cm)
-                #     # plot confusion matrix
-                #     plot_confusion_matrix(cm, self.opt.dataset, self.opt.save_folder)
+                if idx > 50:
+                    break
 
             pred_labels = np.array(pred_labels).astype(int)
             test_labels = np.array(test_labels).astype(int)
-            acc, purity, cm = eval_acc(test_labels, pred_labels)
+            acc, purity, cm = eval_acc_multi_label(test_labels, pred_labels, self.model.cluster_labels)
 
             nmi = eval_nmi(test_labels, pred_labels)
             print('NMI: {}'.format(nmi))
@@ -285,6 +295,9 @@ class LifeHD():
                     nmi=nmi, ri=ri, nc=self.model.cur_classes, 
                     trim=self.trim, merge=self.merge
                 ))
+
+            del pred_labels
+            del test_labels
 
             return acc, purity
 
@@ -324,8 +337,13 @@ class LifeHD():
             new_cs = self.model.cur_classes
             self.model.cur_classes += 1
         else:
-            assert np.min(self.model.last_edit) > 0, 'not all classes are edited!'
-            new_cs = np.argmin(self.model.last_edit).astype('int')
+            # assert np.min(self.model.last_edit) > 0, 'not all classes are edited!'
+            # new_cs = np.argmin(self.model.last_edit).astype('int')
+            valid_indices = np.where(self.model.last_edit > 0)[0]
+            if len(valid_indices) > 0:
+                new_cs = valid_indices[np.argmin(self.model.last_edit[valid_indices])]
+            else: # use any class if none are edited
+                new_cs = np.argmin(self.model.last_edit)
 
         self.model.classify_weights[new_cs] = sample_hv.sum(dim=0)
         self.model.classify_sample_cnt[new_cs] = sample_hv.shape[0]

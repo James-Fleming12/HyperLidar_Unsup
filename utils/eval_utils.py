@@ -11,55 +11,56 @@ from sklearn.metrics import pairwise_distances
 from sklearn.metrics.cluster import normalized_mutual_info_score, rand_score
 from .plot_utils import plot_tsne
 
-def eval_acc(y_true, y_pred):
+def eval_acc_multi_label(y_true, y_pred, cluster_labels):
     """
-    Calculate clustering accuracy. Require scikit-learn installed.
-    Allow multiple predicted labels matching one true label.
+    Calculate clustering accuracy for multi-label clusters.
+    Each cluster can have multiple correct labels.
+    
     # Arguments
-        y: true labels, numpy.array with shape `(n_samples,)`
-        y_pred: predicted labels, numpy.array with shape `(n_samples,)`
+        y_true: true labels, numpy.array with shape `(n_samples,)`
+        y_pred: predicted cluster assignments, numpy.array with shape `(n_samples,)`
+        cluster_labels: dictionary mapping cluster_id to dict of {label: count}
+                       or list of sets of valid labels for each cluster
     # Return
         accuracy, in [0,1]
         purity, in [0,1]
+        confusion_matrix
     """
     assert (y_pred.size == y_true.size), \
         "Incorrect label length in eval_acc! y_pred {}, y_true {}".format(
             y_pred.size, y_true.size)
 
-    # Initialize the confusion matrix as the cost matrix
+    n_samples = y_true.size
+    n_clusters = len(cluster_labels)
+    
+    valid_labels_per_cluster = []
+    for cluster_id in range(n_clusters):
+        if cluster_id in cluster_labels:
+            if isinstance(cluster_labels[cluster_id], dict):
+                valid_labels_per_cluster.append(set(cluster_labels[cluster_id].keys()))
+            elif isinstance(cluster_labels[cluster_id], (set, list)):
+                valid_labels_per_cluster.append(set(cluster_labels[cluster_id]))
+        else:
+            valid_labels_per_cluster.append(set())
+    
+    correct_predictions = 0
+    for i in range(n_samples):
+        cluster_id = y_pred[i]
+        true_label = y_true[i]
+        if cluster_id < len(valid_labels_per_cluster) and true_label in valid_labels_per_cluster[cluster_id]:
+            correct_predictions += 1
+    
+    accuracy = correct_predictions / n_samples
+    
     D1 = y_pred.max() + 1
     D2 = y_true.max() + 1
     cm = np.zeros((D1, D2), dtype=np.int64)
     for i in range(y_pred.size):
         cm[y_pred[i], y_true[i]] += 1
     
-    cv = cm.reshape(-1)  # Reshape to a vector as c in the objective
-    # print(D1, D2)
-
-    # Create integer bounds for decision variables
-    from scipy import optimize
-    bounds = optimize.Bounds(0, 1)
-    integrality = np.full_like(cv, True)
-
-    # Create the matrix A and the linear constraint
-    A = np.eye(D1).repeat(D2, axis=1)
-    contraints = optimize.LinearConstraint(A=A, lb=1, ub=1)
-
-    # Solve the milp problem
-    from scipy.optimize import milp
-    res = milp(c=cv.max() - cv, 
-               constraints=contraints, 
-               integrality=integrality, 
-               bounds=bounds)
-
-    #print(res.x.reshape(D1, D2))
-    # print(w)
-    acc = sum(cv * res.x) * 1.0 / y_pred.size
-
-    # compute purity
     purity = np.sum(np.max(cm, axis=0)) / np.sum(cm)
-    return acc, purity, cm.T
-
+    
+    return accuracy, purity, cm.T
 
 def eval_nmi(y_true, y_pred):
     """
@@ -72,7 +73,6 @@ def eval_nmi(y_true, y_pred):
     """
     return normalized_mutual_info_score(y_true, y_pred)
 
-
 def eval_ri(y_true, y_pred):
     """
     Calculate clustering random index. Require scikit-learn installed.
@@ -83,7 +83,6 @@ def eval_ri(y_true, y_pred):
         ri, in [0,1]
     """
     return rand_score(y_true, y_pred)
-
 
 def tsne_simil(x, metric='euclidean', sigma=1.0):
     dist_matrix = pairwise_distances(x, metric=metric)

@@ -43,15 +43,15 @@ class DualHD:
         self.life_val = life_parser.get_valid_set()
 
         self.epochs = 50 # temp for testing
-        self.hd_dim = 1000
-        self.randomness = 0.5 # ...
+        self.hd_dim = 2000
+        self.randomness = 0.01 # ...
         self.validation_frequency = 5
         self.evaluator = iouEval(self.num_classes, device, [])
 
         opt_model = SimpleNamespace(
             dim=self.hd_dim,
             hd_encoder="rp",
-            max_classes=20,
+            max_classes=50,
             method="LifeHD",
             temperature = self.randomness, # ...
         )
@@ -106,7 +106,6 @@ class DualHD:
 
     def train_high(self):
         self.high_hd_trainer.start()
-        torch.save(self.high_hd.state_dict(), f"end_high_hdc.pth")
 
 def main():
     torch.cuda.empty_cache()
