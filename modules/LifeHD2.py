@@ -96,6 +96,8 @@ class LifeHD(nn.Module):
         self.best_model_path = os.path.join(self.opt.save_folder, "best_model_val.pth")
         self.new_model_path = os.path.join(self.opt.save_folder, f'end_high_hdc.pth')
 
+        self.num_val = 1000
+
     def start(self):
         for epoch in range(1, self.opt.epochs+1):
             # train for one epoch
@@ -276,7 +278,7 @@ class LifeHD(nn.Module):
                 pred_labels += predictions.detach().cpu().tolist()
                 test_labels += label.cpu().tolist()
 
-                if idx > 50:
+                if idx > self.num_val:
                     break
 
             pred_labels = np.array(pred_labels).astype(int)

@@ -83,7 +83,7 @@ opt_train = SimpleNamespace(
 model_temp = Model(opt_model, modelfile=BACKBONE_FILE, num_classes=28, device=DEVICE, patch_size=16).to(DEVICE)
 model = LifeHD(opt_train, test_loader, test_loader, 28, model_temp, DEVICE, patch_size=16)
 
-ckpt = torch.load(MODEL_FILE, map_location=DEVICE)
+ckpt = torch.load(MODEL_FILE, map_location=DEVICE, weights_only=False)
 
 model.model.load_state_dict(ckpt["state_dict"])
 
@@ -97,7 +97,6 @@ model.model.cur_classes = ckpt["cur_classes"]
 
 model.mask = ckpt["mask"]
 model.cur_mask_dim = ckpt["cur_mask_dim"]
-
 
 # model.eval()
 
@@ -127,9 +126,8 @@ images = np.array(images)
 
 print("\n==== Evaluation Results ====")
 
-acc, purity, cm = eval_acc_multi_label(true_labels, pred_labels, model.model.cluster_labels)
+acc, cm = eval_acc_multi_label(true_labels, pred_labels, model.model.cluster_labels)
 print("ACC:", acc)
-print("Purity:", purity)
 
 nmi = eval_nmi(true_labels, pred_labels)
 print("NMI:", nmi)

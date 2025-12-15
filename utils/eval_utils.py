@@ -11,56 +11,61 @@ from sklearn.metrics import pairwise_distances
 from sklearn.metrics.cluster import normalized_mutual_info_score, rand_score
 from .plot_utils import plot_tsne
 
-def eval_acc_multi_label(y_true, y_pred, cluster_labels):
+import numpy as np
+
+def eval_acc_multi_label(y_true, y_pred, cluster_labels, threshold_ratio=0.10):
     """
-    Calculate clustering accuracy for multi-label clusters.
-    Each cluster can have multiple correct labels.
-    
-    # Arguments
-        y_true: true labels, numpy.array with shape `(n_samples,)`
-        y_pred: predicted cluster assignments, numpy.array with shape `(n_samples,)`
-        cluster_labels: dictionary mapping cluster_id to dict of {label: count}
-                       or list of sets of valid labels for each cluster
-    # Return
-        accuracy, in [0,1]
-        purity, in [0,1]
-        confusion_matrix
+    Multi-label clustering evaluation (Option 2).
+
+    - A prediction is correct if true_label ∈ valid_labels(cluster)
+    - Confusion matrix is binary:
+          cm[true_label, pred_cluster] = 1 if valid; otherwise 0.
+
+    Arguments:
+        y_true: (n_samples,) array of true labels
+        y_pred: (n_samples,) array of predicted cluster IDs
+        cluster_labels: dict {cluster_id: {label: count}}
+        threshold_ratio: threshold for filtering low-frequency labels
+
+    Returns:
+        accuracy: fraction of correct multi-label predictions
+        cm: binary multi-label correctness matrix (num_classes × n_clusters)
     """
-    assert (y_pred.size == y_true.size), \
-        "Incorrect label length in eval_acc! y_pred {}, y_true {}".format(
-            y_pred.size, y_true.size)
+
+    assert y_pred.size == y_true.size, \
+        f"Incorrect label length: y_pred={y_pred.size}, y_true={y_true.size}"
 
     n_samples = y_true.size
     n_clusters = len(cluster_labels)
-    
+    num_classes = int(np.max(y_true)) + 1
+
     valid_labels_per_cluster = []
-    for cluster_id in range(n_clusters):
-        if cluster_id in cluster_labels:
-            if isinstance(cluster_labels[cluster_id], dict):
-                valid_labels_per_cluster.append(set(cluster_labels[cluster_id].keys()))
-            elif isinstance(cluster_labels[cluster_id], (set, list)):
-                valid_labels_per_cluster.append(set(cluster_labels[cluster_id]))
-        else:
+    
+    for cid in range(n_clusters):
+        if cid not in cluster_labels:
             valid_labels_per_cluster.append(set())
-    
-    correct_predictions = 0
-    for i in range(n_samples):
-        cluster_id = y_pred[i]
-        true_label = y_true[i]
-        if cluster_id < len(valid_labels_per_cluster) and true_label in valid_labels_per_cluster[cluster_id]:
-            correct_predictions += 1
-    
-    accuracy = correct_predictions / n_samples
-    
-    D1 = y_pred.max() + 1
-    D2 = y_true.max() + 1
-    cm = np.zeros((D1, D2), dtype=np.int64)
-    for i in range(y_pred.size):
-        cm[y_pred[i], y_true[i]] += 1
-    
-    purity = np.sum(np.max(cm, axis=0)) / np.sum(cm)
-    
-    return accuracy, purity, cm.T
+            continue
+
+        labels_dict = cluster_labels[cid]
+        total = sum(labels_dict.values())
+        threshold = threshold_ratio * total
+
+        valid = {lbl for lbl, cnt in labels_dict.items() if cnt >= threshold}
+        valid_labels_per_cluster.append(valid)
+
+    correct = 0
+    for t, p in zip(y_true, y_pred):
+        if t in valid_labels_per_cluster[p]:
+            correct += 1
+
+    accuracy = correct / n_samples
+
+    cm = np.zeros((num_classes, n_clusters), dtype=np.int64)
+
+    for t, p in zip(y_true, y_pred):
+        cm[t, p] = 1 if (t in valid_labels_per_cluster[p]) else 0
+
+    return accuracy, cm
 
 def eval_nmi(y_true, y_pred):
     """
